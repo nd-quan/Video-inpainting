@@ -138,7 +138,7 @@ class BrushNetModel(ModelMixin, ConfigMixin):
     def __init__(
         self,
         in_channels: int = 4,
-        conditioning_channels: int = 5,
+        conditioning_channels: int = 9, # 나은 default 5 ##### 5일때(mask+input) 8일때(ROI+BG) 9일때(ROI+BG+mask) 
         flip_sin_to_cos: bool = True,
         freq_shift: int = 0,
         down_block_types: Tuple[str, ...] = (
@@ -509,24 +509,85 @@ class BrushNetModel(ModelMixin, ConfigMixin):
             brushnet_conditioning_channel_order=brushnet_conditioning_channel_order,
             conditioning_embedding_out_channels=conditioning_embedding_out_channels,
         )
+        # 초기 unet 복제한거 여기 수정해야할것 같은데 
+        # if load_weights_from_unet:
+        #     conv_in_condition_weight=torch.zeros_like(brushnet.conv_in_condition.weight)
+        #     conv_in_condition_weight[:,:4,...]=unet.conv_in.weight
+        #     conv_in_condition_weight[:,4:8,...]=unet.conv_in.weight
+        #     brushnet.conv_in_condition.weight=torch.nn.Parameter(conv_in_condition_weight)
+        #     brushnet.conv_in_condition.bias=unet.conv_in.bias
 
+        #     brushnet.time_proj.load_state_dict(unet.time_proj.state_dict())
+        #     brushnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
+
+        #     if brushnet.class_embedding:
+        #         brushnet.class_embedding.load_state_dict(unet.class_embedding.state_dict())
+
+        #     brushnet.down_blocks.load_state_dict(unet.down_blocks.state_dict(),strict=False)
+        #     brushnet.mid_block.load_state_dict(unet.mid_block.state_dict(),strict=False)
+        #     brushnet.up_blocks.load_state_dict(unet.up_blocks.state_dict(),strict=False)
+
+        # return brushnet
+        
+        # 나은 수정한 부분
         if load_weights_from_unet:
-            conv_in_condition_weight=torch.zeros_like(brushnet.conv_in_condition.weight)
-            conv_in_condition_weight[:,:4,...]=unet.conv_in.weight
-            conv_in_condition_weight[:,4:8,...]=unet.conv_in.weight
-            brushnet.conv_in_condition.weight=torch.nn.Parameter(conv_in_condition_weight)
-            brushnet.conv_in_condition.bias=unet.conv_in.bias
+            W_unet = unet.conv_in.weight            # [out, 4, 3, 3]
+            B_unet = unet.conv_in.bias              # [out]
+            W_new  = brushnet.conv_in_condition.weight.detach().clone()
+            # conditioning_channels: brushnet 생성 시 넘긴 값 (예: 5 또는 8)
+            Cc = getattr(brushnet.config, "conditioning_channels", None)
+            if Cc is None:
+                # 혹시 config에 없으면 in_ch에서 추정 (총 in = 4 + Cc)
+                Cc = brushnet.conv_in_condition.in_channels - unet.config.in_channels
 
+            with torch.no_grad():
+                # 먼저 전부 0으로
+                W_new.zero_()
+
+                # 공통: sample 4채널(0:4)은 항상 복사
+                W_new[:, 0:4, ...] = W_unet
+
+                if Cc == 5:
+                    # ===== 기존 로직 유지 =====
+                    # cond 앞 4채널(4:8)에 복사, 마지막 1채널(8:9)은 0으로 시작
+                    W_new[:, 4:8, ...] = W_unet
+
+                elif Cc == 8:
+                    # ===== 새 분기: cond1 4채널 + cond2 4채널 =====
+                    # cond1(4:8), cond2(8:12)에 각각 복사
+                    W_new[:, 4:8,  ...] = W_unet
+                    W_new[:, 8:12, ...] = W_unet
+
+                else:
+                    # ===== 안전한 일반화(Fallback) =====
+                    # cond 채널 Cc를 4개 블록씩 타일 복사, 남으면 앞에서 k개만 복사
+                    num_full_blocks = Cc // 4
+                    for b in range(num_full_blocks):
+                        start = 4 + b * 4
+                        end   = start + 4
+                        W_new[:, start:end, ...] = W_unet
+                    k = Cc % 4
+                    if k:
+                        start = 4 + num_full_blocks * 4
+                        W_new[:, start:start + k, ...] = W_unet[:, :k, ...]
+
+                # bias 복사
+                brushnet.conv_in_condition.bias.copy_(B_unet)
+
+            # 파라미터로 세팅
+            brushnet.conv_in_condition.weight = torch.nn.Parameter(W_new)
+
+            # 나머지 모듈은 기존대로 복사
             brushnet.time_proj.load_state_dict(unet.time_proj.state_dict())
             brushnet.time_embedding.load_state_dict(unet.time_embedding.state_dict())
 
             if brushnet.class_embedding:
                 brushnet.class_embedding.load_state_dict(unet.class_embedding.state_dict())
 
-            brushnet.down_blocks.load_state_dict(unet.down_blocks.state_dict(),strict=False)
-            brushnet.mid_block.load_state_dict(unet.mid_block.state_dict(),strict=False)
-            brushnet.up_blocks.load_state_dict(unet.up_blocks.state_dict(),strict=False)
-
+            brushnet.down_blocks.load_state_dict(unet.down_blocks.state_dict(), strict=False)
+            brushnet.mid_block.load_state_dict(unet.mid_block.state_dict(),  strict=False)
+            brushnet.up_blocks.load_state_dict(unet.up_blocks.state_dict(),   strict=False)
+            
         return brushnet
 
     @property
