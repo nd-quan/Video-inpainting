@@ -2,10 +2,16 @@ import os
 from typing import List
 
 import torch
+import torch.nn.functional as F
 from diffusers import StableDiffusionPipeline
-from diffusers.pipelines.controlnet import MultiControlNetModel
+try:
+    from diffusers.pipelines.controlnet import MultiControlNetModel
+except Exception:
+    MultiControlNetModel = None
 from PIL import Image
 from safetensors import safe_open
+from tqdm import tqdm
+from torchvision import transforms
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
 from .utils import is_torch2_available, get_generator
@@ -504,6 +510,97 @@ class FusionIPAdapter(IPAdapter):
         ).images
 
         return images
+
+        # ====================== TEST PGD SIMPLE (Cách 1 - AAAI) ======================
+
+
+
+# # ====================== TEST PGD SIMPLE (Cách 1 - AAAI) ======================
+#     @torch.enable_grad()
+#     def generate_fgbg_pgd_simple(
+#         self,
+#         fg_pil_list,
+#         bg_pil_list,
+#         prompt_list,
+#         init_image_list,
+#         mask_image_list,
+#         pgd_steps=60,
+#         sigma=0.18,
+#         pgd_lr=0.03,
+#         num_inference_steps=30,
+#         num_samples=1,
+#         generator=None,
+#         **kwargs
+#     ):
+#         """Phiên bản test nhanh: PGD trên image domain"""
+#         N = len(fg_pil_list)
+#         device = self.device
+#         dtype = torch.float16
+
+#         # Khởi tạo shared seed + residuals
+#         z_shared_BG = torch.randn(1, 3, 512, 512, device=device, dtype=dtype, requires_grad=True)
+#         r_BG = [torch.randn(1, 3, 512, 512, device=device, dtype=dtype) * 0.05 for _ in range(N)]
+#         for r in r_BG:
+#             r.requires_grad_(True)
+
+#         optimizer = torch.optim.Adam([z_shared_BG] + r_BG, lr=pgd_lr)
+
+#         for pgd_iter in tqdm(range(pgd_steps), desc="PGD Simple Test"):
+#             optimizer.zero_grad()
+
+#             # Tạo BG images từ shared seed + residual (tensor có gradient)
+#             bg_images = []
+#             for i in range(N):
+#                 bg_tensor = (z_shared_BG + r_BG[i]).clamp(0, 1)
+#                 bg_pil = transforms.ToPILImage()(bg_tensor[0].cpu())
+#                 bg_images.append(bg_pil)
+
+#             # Gọi generate_fgbg
+#             restored = self.generate_fgbg(
+#                 fg_pil_image=fg_pil_list,
+#                 bg_pil_image=bg_images,
+#                 prompt=prompt_list[0] if isinstance(prompt_list, list) else prompt_list,
+#                 image=init_image_list,
+#                 mask_image=mask_image_list,
+#                 num_inference_steps=num_inference_steps,
+#                 num_samples=num_samples,
+#                 generator=generator,
+#                 **kwargs
+#             )
+
+#             # TÍNH LOSS TRỰC TIẾP TRÊN TENSOR CÓ GRADIENT (không qua restored)
+#             loss = 0.0
+#             for i in range(N):
+#                 # Tính loss trên bg_tensor (có gradient) thay vì restored
+#                 bg_tensor = (z_shared_BG + r_BG[i]).clamp(0, 1)
+#                 init_i = transforms.ToTensor()(init_image_list[i]).unsqueeze(0).to(device, dtype)
+#                 mask_tensor = transforms.ToTensor()(mask_image_list[i]).unsqueeze(0).to(device)
+
+#                 loss += F.mse_loss(
+#                     bg_tensor * (1 - mask_tensor),
+#                     init_i * (1 - mask_tensor)
+#                 )
+
+#             loss.backward()
+#             optimizer.step()
+
+#             # === PROJECTION STEP ===
+#             with torch.no_grad():
+#                 norm = torch.norm(z_shared_BG)
+#                 if norm > sigma:
+#                     z_shared_BG *= (sigma / norm)
+#                 for i in range(N):
+#                     norm_r = torch.norm(r_BG[i])
+#                     if norm_r > sigma:
+#                         r_BG[i] *= (sigma / norm_r)
+
+#         # Decode final images
+#         final_images = []
+#         with torch.no_grad():
+#             for i in range(N):
+#                 final_bg = (z_shared_BG + r_BG[i]).clamp(0, 1)
+#                 final_images.append(transforms.ToPILImage()(final_bg[0]))
+#         return final_images
 
 class IPAdapterXL(IPAdapter):
     """SDXL"""

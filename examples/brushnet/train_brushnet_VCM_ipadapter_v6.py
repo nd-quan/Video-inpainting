@@ -18,6 +18,9 @@ import cv2
 import imgaug.augmenters as iaa
 import itertools
 
+import sys
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../src')))
+
 import accelerate
 import numpy as np
 import torch
@@ -28,7 +31,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from datasets import load_dataset
+# from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image, ImageDraw
@@ -40,12 +43,15 @@ from custom_dataset_v04 import CustomDataset
 import diffusers
 from diffusers import (
     AutoencoderKL,
-    BrushNetModel,
+    # BrushNetModel,
     DDPMScheduler,
-    StableDiffusionBrushNetPipeline,
+    # StableDiffusionBrushNetPipeline,
     UNet2DConditionModel,
     UniPCMultistepScheduler,
 )
+
+from diffusers.pipelines.brushnet.pipeline_brushnet import StableDiffusionBrushNetPipeline
+from diffusers.models.brushnet import BrushNetModel
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
@@ -87,10 +93,12 @@ def log_validation(
 ):
     logger.info("Running validation... ")
 
-    if not is_final_validation:
-        brushnet = accelerator.unwrap_model(brushnet)
-    else:
-        brushnet = BrushNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
+    # if not is_final_validation:
+    #     brushnet = accelerator.unwrap_model(brushnet)
+    # else:
+    #     brushnet = BrushNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
+
+    brushnet = accelerator.unwrap_model(brushnet)
 
     pipeline = StableDiffusionBrushNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1190,11 +1198,11 @@ def main(args):
     # )
     train_dataset = CustomDataset(
         # captions_file="/media/hdd/hahyeon/BrushNet/data/captions_train.txt",
-        captions_file="/home/gpu_01/nas_naeun/data/data/caption/train/COCO_train_caption.txt",
+        captions_file="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/train/PartyScene_512/caption.txt",
         # captions_file="/media/hdd/naeun/dataset/caption/COCO_train_caption.txt",
-        gt_folder="/home/gpu_01/nas_naeun/data/data/New/gt_COCO",
-        synthesis_folder = "/home/gpu_01/nas_naeun/data/data/New/synthesis_COCO",
-        mask_folder="/home/gpu_01/nas_naeun/data/data/New/mask_COCO",
+        gt_folder="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/train/PartyScene_512/gt",
+        synthesis_folder = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/train/PartyScene_512/inputs",
+        mask_folder="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/train/PartyScene_512/masks",
         tokenizer=tokenizer,
     )
     

@@ -8,6 +8,15 @@ __pycache__/
 # C extensions
 *.so
 
+*.png
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.log
+*.safetensors
+*.pkl
+
 # tests and logs
 tests/fixtures/cached_*_text.txt
 logs/

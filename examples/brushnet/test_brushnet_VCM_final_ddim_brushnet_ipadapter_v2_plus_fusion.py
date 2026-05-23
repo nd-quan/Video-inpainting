@@ -8,7 +8,14 @@
 import os
 from glob import glob
 from tqdm import tqdm
-from diffusers import StableDiffusionBrushNetPipeline, BrushNetModel, DDIMScheduler, UNet2DConditionModel
+import sys
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../src')))
+# from diffusers import StableDiffusionBrushNetPipeline, BrushNetModel, DDIMScheduler, UNet2DConditionOutput
+
+from diffusers import DDIMScheduler
+from diffusers.pipelines.brushnet.pipeline_brushnet import StableDiffusionBrushNetPipeline
+from diffusers.models.brushnet import BrushNetModel
+
 import torch
 import cv2
 import numpy as np
@@ -35,21 +42,21 @@ device="cuda"
 
 # 설정
 # image_dir = "/home/gpu_01/nas_naeun/data/data/test_in_COCO" # coco
-image_dir='/home/gpu_01/nas_naeun/data/data/open/test_in_OID_resized' # open
+image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512/images' # open
 # image_dir="/media/ssd2/naeun/NAS_NE/data/data/New/synthesis_COCO"
 
 # mask_dir = "/home/gpu_01/nas_naeun/data/data/test_mask_COCO" # coco
-mask_dir='/home/gpu_01/nas_naeun/data/data/open/test_mask_OID_resized' # open
+mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512/masks' # open
 # mask_dir="/media/ssd2/naeun/NAS_NE/data/data/New/mask_COCO"
 
 # caption_txt = "/media/ssd2/naeun/ws04/BrushNet/dataset/opendataset/captions_test_openimage.txt" #open(ws09)
 # caption_txt='/home/gpu_01/nas_naeun/data/data/caption/test/captions_test_COCO.txt' #coco(ws09)
-caption_txt="/home/gpu_01/nas_naeun/data/data/caption/test/captions_test_openimage.txt" # A100
+caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption.txt" # A100
  
 # output_dir = "/media/hdd/naeun/save/BrushNet_200000"
 # output_dir = "/media/hdd/naeun/save/test_with_originalcaption/Brushnet_200000"
 # output_dir='/media/hdd/naeun/save/Opendataset/BrushNet_300000'
-output_dir='/home/gpu_01/naeun/result/open/proposed_v2/'
+output_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/15epochs'
 # test 15는 14에서 그냥 copy&paste
 # test 16은 blending을 반대로 
 os.makedirs(output_dir, exist_ok=True)
@@ -59,9 +66,23 @@ base_model_path="stable-diffusion-v1-5/stable-diffusion-v1-5" #512
 # brushnet_path = "/media/hdd/naeun/save/checkpoint/Checkpoint_brushNet_200000"
 # brushnet_path="/media/ssd2/naeun/ws04/BrushNet_previous/examples/brushnet/pretrained_brushnet/brushnet"
 # brushnet_path="/media/ssd2/naeun/NAS_NE/checkpoint/Checkpoint_brushnet_512/checkpoint-600000/brushnet"
-brushnet_path="/home/gpu_01/naeun/v8/checkpoint-300000/brushnet"
+# brushnet_path="/home/gpu_01/naeun/v8/checkpoint-300000/brushnet"
+
+
+# brushnet_path="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
+brushnet_path="/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/train_naeun/checkpoint-10/brushnet"
+
+
 # 블렌딩 설정 바꾸기
 blended = True
+
+
+# # ========================== PGD TEMPORAL TEST ==========================
+# pgd_steps = 60
+# sigma = 0.18
+# pgd_lr = 0.03
+# test_clip_size = 8   # test với 8 frame liên tiếp
+# # ======================================================================
 
 brushnet_conditioning_scale = 1.0
 
@@ -78,7 +99,8 @@ image_encoder = CLIPVisionModelWithProjection.from_pretrained(
     "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 ).to(pipe.device, dtype=pipe.dtype)
 
-ip_ckpt="/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/model.safetensors"
+# ip_ckpt="/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/model.safetensors"
+ip_ckpt = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/train_naeun/checkpoint-10/ipadapter/model.safetensors"
 pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 pipe.enable_model_cpu_offload()
 
@@ -86,7 +108,8 @@ pipe.register_modules(
     image_encoder=image_encoder,
     feature_extractor=CLIPImageProcessor(),
 )
-fusion_ckpt = "/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/fusion_module.safetensors"
+# fusion_ckpt = "/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/fusion_module.safetensors"
+fusion_ckpt = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/train_naeun/checkpoint-10/ipadapter/fusion_module.safetensors"
 
 ip_model = FusionIPAdapter(
     pipe,
@@ -124,6 +147,10 @@ indexed_pending = [
 print(f"[Resume] 총 {len(indexed_all)}개 중 이미 {len(indexed_all) - len(indexed_pending)}개 완료, "
       f"{len(indexed_pending)}개 생성 예정.")
 
+
+# """ # ----------- naeun code -----------
+
+# ========================================================================
 for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(indexed_pending)):
     init_image_np = cv2.imread(image_path)[:, :, ::-1]
     mask_np = 1. * (cv2.imread(mask_path).sum(-1) > 255)[:, :, np.newaxis]
@@ -206,3 +233,78 @@ for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(
     # 저장
     basename = os.path.basename(image_path)
     image.save(os.path.join(output_dir, basename))
+
+
+
+# """
+
+# # ========================== TẠO CLIP 8 FRAME & CHẠY PGD ==========================
+# print(f"\n=== BẮT ĐẦU TEST PGD SHARED SEED ({test_clip_size} frames/clip) ===")
+
+# # Nhóm frame thành clip
+# clips = []
+# for i in range(0, len(indexed_pending), test_clip_size):
+#     clip = indexed_pending[i:i + test_clip_size]
+#     if len(clip) < test_clip_size:
+#         print(f"  Skip clip cuối (chỉ {len(clip)} frame)")
+#         continue
+#     clips.append(clip)
+
+# print(f"→ Tạo được {len(clips)} clip ({test_clip_size} frame/clip)")
+
+# # Chạy PGD trên từng clip
+# for clip_idx, clip in enumerate(clips[:2]):   # test 2 clip đầu (bạn có thể tăng)
+#     print(f"\n[Clip {clip_idx+1}/{len(clips)}] Đang xử lý {len(clip)} frames...")
+
+#     fg_list = []
+#     bg_list = []
+#     init_list = []
+#     mask_list = []
+#     prompts = []
+
+#     for _, image_path, mask_path, caption in clip:
+#         # Load giống code cũ của bạn
+#         init_image_np = cv2.imread(image_path)[:, :, ::-1]
+#         mask_np = 1. * (cv2.imread(mask_path).sum(-1) > 255)[:, :, np.newaxis]
+
+#         init_image = Image.fromarray(init_image_np.astype(np.uint8)).convert("RGB")
+#         mask_image = Image.fromarray((mask_np * 255).astype(np.uint8).repeat(3, -1)).convert("RGB")
+
+#         transform = transforms.Compose([transforms.Resize((512, 512))])
+#         init_image = transform(init_image)
+#         mask_image = transform(mask_image)
+
+#         # fg / bg
+#         fg_np = init_image_np * mask_np
+#         bg_np = init_image_np * (1 - mask_np)
+#         fg_pil = transform(Image.fromarray(fg_np.astype(np.uint8)).convert("RGB"))
+#         bg_pil = transform(Image.fromarray(bg_np.astype(np.uint8)).convert("RGB"))
+
+#         fg_list.append(fg_pil)
+#         bg_list.append(bg_pil)
+#         init_list.append(init_image)
+#         mask_list.append(mask_image)
+#         prompts.append(caption)
+
+#     # === GỌI PGD ===
+#     restored_clip = ip_model.generate_fgbg_pgd_simple(
+#         fg_pil_list=fg_list,
+#         bg_pil_list=bg_list,           # ← bg_pil_list
+#         prompt_list=prompts,
+#         init_image_list=init_list,
+#         mask_image_list=mask_list,
+#         pgd_steps=pgd_steps,
+#         sigma=sigma,
+#         pgd_lr=pgd_lr,
+#         num_inference_steps=50,
+#         generator=generator
+#     )
+
+#     # Lưu kết quả
+#     for i, image in enumerate(restored_clip):
+#         orig_basename = os.path.basename(clip[i][1])
+#         save_path = os.path.join(output_dir, f"pgd_clip{clip_idx:02d}_{orig_basename}")
+#         image.save(save_path)
+#         print(f"  Saved: {save_path}")
+
+# print("\n=== HOÀN TẤT TEST PGD SHARED SEED ===")
