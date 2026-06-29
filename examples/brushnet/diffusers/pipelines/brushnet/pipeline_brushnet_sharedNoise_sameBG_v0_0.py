@@ -1,5 +1,4 @@
 import inspect
-import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -850,7 +849,6 @@ class StableDiffusionBrushNetPipeline(
         use_shared_bg_noise: bool = False,
         shared_bg_noise: Optional[torch.FloatTensor] = None,
         shared_bg_noise_strength: float = 1.0,
-        variance_preserving_shared_noise: bool = False,
 
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
@@ -1140,7 +1138,7 @@ class StableDiffusionBrushNetPipeline(
                 bg_mask_latent = bg_mask_latent[:1].repeat(latent_batch, 1, 1, 1)
 
             if shared_bg_noise is None:
-                shared_bg_noise = noise.mean(dim=0, keepdim=True) * math.sqrt(noise.shape[0])
+                shared_bg_noise = noise[:1]
             else:
                 shared_bg_noise = shared_bg_noise.to(device=device, dtype=latents.dtype)
                 if shared_bg_noise.ndim == 3:
@@ -1159,18 +1157,9 @@ class StableDiffusionBrushNetPipeline(
                 shared_bg_noise = shared_bg_noise[:1]
 
             shared_bg_noise = shared_bg_noise.expand_as(noise)
-            shared_strength = max(0.0, min(1.0, float(shared_bg_noise_strength)))
+            bg_mix = bg_mask_latent * max(0.0, min(1.0, float(shared_bg_noise_strength)))
 
-            if variance_preserving_shared_noise:
-                # Treat shared_strength as the target inter-frame BG correlation rho.
-                shared_weight = math.sqrt(shared_strength)
-                independent_weight = math.sqrt(1.0 - shared_strength)
-                mixed_bg_noise = independent_weight * noise + shared_weight * shared_bg_noise
-                noise = noise * (1.0 - bg_mask_latent) + mixed_bg_noise * bg_mask_latent
-            else:
-                bg_mix = bg_mask_latent * shared_strength
-                noise = noise * (1.0 - bg_mix) + shared_bg_noise * bg_mix
-
+            noise = noise * (1.0 - bg_mix) + shared_bg_noise * bg_mix
             latents = noise * self.scheduler.init_noise_sigma
 
 
@@ -2520,3 +2509,4 @@ class StableDiffusionBrushNetPipeline_v02(
             return (image, has_nsfw_concept)
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+
