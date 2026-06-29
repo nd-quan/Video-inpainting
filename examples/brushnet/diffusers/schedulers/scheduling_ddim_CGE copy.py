@@ -26,6 +26,7 @@ from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from ..utils.torch_utils import randn_tensor
 from .scheduling_utils import KarrasDiffusionSchedulers, SchedulerMixin
+from multiprocessing.pool import ThreadPool
 import sys
 
 import uuid
@@ -33,16 +34,13 @@ import os
 # from ..utils import logger
 from loguru import logger
 # sys.path.insert(1, '/media/ssd1/daole/sd_scripts/VVC_Python') #Le언니 경로로 아예바꿈(ws09전용일듯)
-sys.path.insert(1,'/media/ssd1/ndquan/model_naeun/paper/VVC_Python') # 512 전용
+sys.path.insert(1,'/media/ssd2/naeun/VVC/VVC_Python') # 512 전용
 import VVC
 
-_DEFAULT_CGE_VVC_ENCODER = "/media/ssd1/ndquan/TGDR/VVC/vvencFFapp"
-_cge_vvc_encoder = os.environ.get("CGE_VVC_ENCODER", _DEFAULT_CGE_VVC_ENCODER)
-if os.path.exists(_cge_vvc_encoder):
-    VVC.EXECUTABLE_FILE_NAME = _cge_vvc_encoder
+import time
 
 # 로그와 이미지 저장 폴더 지정
-log_root = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/logs"
+log_root = "/media/ssd2/naeun/BrushNet/logs"
 save_dir_ = os.path.join(log_root, "vvc")
 
 # 폴더 생성
@@ -95,177 +93,130 @@ logger.info("저장 폴더: {}", save_dir_)
 
 def grad_VVC(x_in, x_lr, maskBG, curStep, fast=False):
     h = 16 / 255
-    perturb = torch.ones_like(x_in)
+    perturb = torch.ones_like(x_in).cuda()
 
     x_in_h_fw = torch.clamp(x_in + h * perturb, -1, 1)
     x_in_h_bw = torch.clamp(x_in - h * perturb, -1, 1)
 
     # 🔑 고유한 폴더 생성 (충돌 방지)
-    log_root = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/logs"  # 상단에 이미 정의되어 있음
+    log_root = "/media/ssd2/naeun/BrushNet/logs"  # 상단에 이미 정의되어 있음
     save_dir_ = os.path.join(log_root, 'vvc', str(uuid.uuid4())[:8])
     # save_dir_ = os.path.join(logger.get_dir(), 'vvc', str(uuid.uuid4())[:8])
     os.makedirs(save_dir_, exist_ok=True)
 
-    success = False
-    try:
-        x_in_degraded = VVC.vvc_func_512(((x_in + 1) / 2), curStep, save_dir_)
-        x_in_lr_h_fw = VVC.vvc_func_h_512(((x_in_h_fw + 1) / 2), curStep, save_dir_)
-        x_in_lr_h_bw = VVC.vvc_func_h_512(((x_in_h_bw + 1) / 2), curStep, save_dir_)
-        success = True
-    except FileNotFoundError as exc:
-        existing_files = sorted(os.listdir(save_dir_)) if os.path.exists(save_dir_) else []
-        raise RuntimeError(
-            "VVC failed to create the expected reconstruction file. "
-            f"encoder={getattr(VVC, 'EXECUTABLE_FILE_NAME', 'unknown')}, "
-            f"work_dir={save_dir_}, existing_files={existing_files}"
-        ) from exc
-    finally:
-        if success and not _env_flag("CGE_KEEP_VVC_LOGS", "0"):
-            # VVC 폴더에 저장안되게 바로 삭제
-            shutil.rmtree(save_dir_, ignore_errors=True)
+    x_in_degraded = VVC.vvc_func_512(((x_in + 1) / 2), curStep, save_dir_)
+    x_in_lr_h_fw = VVC.vvc_func_h_512(((x_in_h_fw + 1) / 2), curStep, save_dir_)
+    x_in_lr_h_bw = VVC.vvc_func_h_512(((x_in_h_bw + 1) / 2), curStep, save_dir_)
+    
+    # VVC 폴더에 저장안되게 바로 삭제
+    shutil.rmtree(save_dir_, ignore_errors=True)
     
     grad_Dx = 2 * maskBG * (x_in_degraded - ((x_lr + 1) / 2))
     grad_x = (x_in_lr_h_fw - x_in_lr_h_bw) * perturb / (2 * h)
     grad_BG = grad_Dx * grad_x
 
     return grad_BG, (x_in_degraded * 2 - 1)  # range [-1, 1]
-  
+
+    
+# def grad_VVC_batch_parallel(x_in , x_lr, maskBG, curStep):
+#     # start = time.time()
+#     thread_pool = ThreadPool(processes=12)
+    
+#     N_batches = x_in.shape[0]
+#     x_in_degraded_batch = N_batches*[None]
+#     grad_BG_batch = N_batches*[None]
+#     task = N_batches*[None]
+#     # print("N batches = ", N_batches)
+
+#     for batchIdx in range(N_batches):
+#         task[batchIdx] = thread_pool.apply_async(grad_VVC, args=(x_in, x_lr, maskBG, batchIdx, curStep, False))
+    
+#     for batchIdx in range(N_batches):
+#         curGrad, degraded_x = task[batchIdx].get()
+#         grad_BG_batch[batchIdx] = curGrad
+#         x_in_degraded_batch[batchIdx] = degraded_x
+
+#     grad_BG_batch       = torch.stack(grad_BG_batch, dim=0)
+#     x_in_degraded_batch = torch.stack(x_in_degraded_batch, dim=0)
+
+#     # print("Parallel running time:", time.time() - start)
+#     return grad_BG_batch, x_in_degraded_batch
+
 def grad_VVC_batch_parallel(x_in, x_lr, maskBG, curStep):
     from multiprocessing.pool import ThreadPool
+    thread_pool = ThreadPool(processes=12)
 
     N = x_in.shape[0]
-    if x_lr.shape[0] != N:
-        if x_lr.shape[0] == 1:
-            x_lr = x_lr.repeat(N, 1, 1, 1)
-        else:
-            raise ValueError(f"x_lr batch size {x_lr.shape[0]} does not match x_in batch size {N}.")
-    if maskBG.shape[0] != N:
-        if maskBG.shape[0] == 1:
-            maskBG = maskBG.repeat(N, 1, 1, 1)
-        else:
-            raise ValueError(f"maskBG batch size {maskBG.shape[0]} does not match x_in batch size {N}.")
-
-    num_workers = min(N, int(os.environ.get("CGE_VVC_WORKERS", "2")))
     grad_BG_batch = [None] * N
     x_in_degraded_batch = [None] * N
+    tasks = [None] * N
 
-    with ThreadPool(processes=max(1, num_workers)) as thread_pool:
-        tasks = [
-            thread_pool.apply_async(grad_VVC, args=(x_in[i], x_lr[i], maskBG[i], curStep, False))
-            for i in range(N)
-        ]
+    for i in range(N):
+        tasks[i] = thread_pool.apply_async(
+            grad_VVC, args=(x_in[i], x_lr[i], maskBG[i], curStep, False)
+        )
 
-        for i in range(N):
-            grad_BG_batch[i], x_in_degraded_batch[i] = tasks[i].get()
+    for i in range(N):
+        grad_BG_batch[i], x_in_degraded_batch[i] = tasks[i].get()
 
     grad_BG_batch = torch.stack(grad_BG_batch, dim=0)
     x_in_degraded_batch = torch.stack(x_in_degraded_batch, dim=0)
 
     return grad_BG_batch, x_in_degraded_batch
 
-
-def decode_with_chunks(decoder, x0, chunk_size=1):
-    if chunk_size is None or chunk_size <= 0 or chunk_size >= x0.shape[0]:
-        return decoder(x0).sample
-
-    decoded = []
-    for start in range(0, x0.shape[0], chunk_size):
-        decoded.append(decoder(x0[start:start + chunk_size]).sample)
-    return torch.cat(decoded, dim=0)
-
-
-def _env_flag(name, default="0"):
-    return str(os.environ.get(name, default)).lower() in {"1", "true", "yes", "on"}
-
-
-def _as_bool(value):
-    if isinstance(value, str):
-        return value.lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def project_l2_ball(tensor: torch.FloatTensor, radius: float) -> torch.FloatTensor:
-    if radius <= 0:
-        return torch.zeros_like(tensor)
-
-    flat = tensor.reshape(tensor.shape[0], -1)
-    norm = torch.linalg.vector_norm(flat.float(), ord=2, dim=1, keepdim=True).clamp_min(1e-12)
-    scale = torch.clamp(float(radius) / norm, max=1.0).to(device=tensor.device, dtype=tensor.dtype)
-    return tensor * scale.reshape(-1, 1, 1, 1)
-
-
-
 def cond_fn(x0, t, x_lr, mask, decoder, args=None):
     with torch.enable_grad():
-
-        guidance_scale = float(getattr(args, "guidance_scale_cge", os.environ.get("CGE_GUIDANCE_SCALE", "0.0001")))
-        per_frame_cge = _as_bool(getattr(args, "per_frame_cge", _env_flag("CGE_PER_FRAME", "0")))
-
-        if per_frame_cge and x0.shape[0] > 1:
-            grads = []
-            for batch_idx in range(x0.shape[0]):
-                x0_i = x0[batch_idx:batch_idx + 1].detach().requires_grad_(True)
-                x_lr_i = x_lr[batch_idx:batch_idx + 1]
-                mask_i = mask[batch_idx:batch_idx + 1]
-
-                I_hat_i = decoder(x0_i).sample
-
-                roi_loss_i = torch.sum((((x_lr_i + 1) / 2 - (I_hat_i + 1) / 2) * mask_i) ** 2)
-                grad_roi_i = torch.autograd.grad(roi_loss_i, x0_i, retain_graph=True)[0]
-
-                mask_bg_i = 1 - mask_i
-                grad_bg_i, _ = grad_VVC_batch_parallel(
-                    I_hat_i.detach(),
-                    x_lr_i.detach(),
-                    mask_bg_i.detach(),
-                    t.item(),
-                )
-
-                I_hat_i.backward(gradient=grad_bg_i, retain_graph=False)
-                grad_bg_i = x0_i.grad.clone()
-                grads.append(grad_roi_i + grad_bg_i)
-
-                del x0_i, x_lr_i, mask_i, I_hat_i, grad_roi_i, grad_bg_i
-
-            raw_grad = torch.cat(grads, dim=0).to(dtype=x0.dtype)
-            if args is not None:
-                args.last_cge_raw_grad = raw_grad.detach()
-            return -guidance_scale * raw_grad
-
         x0 = x0.detach().requires_grad_(True)
+        
+        start_total = time.time()  # 전체 시간 측정 시작
 
-        # # 1. 디코딩 (latent → image)
-        # start = time.time()
-        decode_chunk_size = int(getattr(args, "decode_chunk_size", os.environ.get("CGE_DECODE_CHUNK_SIZE", "1")))
-        I_hat = decode_with_chunks(decoder, x0, decode_chunk_size)
-        # end = time.time()
+        # 1. 디코딩 (latent → image)
+        start = time.time()
+        I_hat = decoder(x0).sample  # 여기서는 brushnet decoder 사용함 ( 다른 방법 e.g., autoencoder.decode(x0) )
+        end = time.time()
         # print(f"[Timi/g] Decode (latent → image): {end - start:.4f}s")
         
-        # # 2. ROI gradient
-        # start = time.time()
+        # 2. ROI gradient
+        start = time.time()
         roi_loss = torch.sum((((x_lr+ 1) / 2 - (I_hat + 1) / 2) * mask) ** 2) # 이거 I_hat이랑 x_lr 위치 주의
         grad_roi = torch.autograd.grad(roi_loss, x0, retain_graph=True)[0]
+        end = time.time()
+        # print(f"[Timing] ROI Gradient: {end - start:.4f}s")
         
-        # # 3. BG gradient (ZOO-box or VVC degradation 등)
-        # start = time.time()
+        # 3. BG gradient (ZOO-box or VVC degradation 등)
+        start = time.time()
         mask_bg = 1 - mask
-        grad_bg, _ = grad_VVC_batch_parallel(
-            I_hat.detach(),
-            x_lr.detach(),
-            mask_bg.detach(),
-            t.item(),
-        )
+        grad_bg, I_degraded = grad_VVC_batch_parallel(I_hat, x_lr, mask_bg, t.item()) # I_hat에 detach를 해야하는지 모르겠음
+        end = time.time()
+        # print(f"[Timing] BG Gradient (VVC): {end - start:.4f}s")
         
-        # # 3.1 BG gradient 이어서 계산
-        # # backward 방식
-        I_hat.backward(gradient=grad_bg, retain_graph=False)  # ∂L/∂I × ∂I/∂x0
+        # 3.1 BG gradient 이어서 계산
+        # backward 방식
+        start = time.time()
+        I_hat.backward(gradient=grad_bg, retain_graph=True)  # ∂L/∂I × ∂I/∂x0
         grad_bg = x0.grad.clone()  # 이제0 grad_bg = ∂L/∂x0 (latent에 대한 gradient!)
+        end = time.time()
+        # print(f"[Timing] Latent Grad (∇I → ∇z): {end - start:.4f}s")
 
+        # autograd 방식
+        # grad_bg = torch.autograd.grad(
+        #     outputs=I_hat,
+        #     inputs=x0,
+        #     grad_outputs=grad_bg,
+        #     retain_graph=True,
+        #     # create_graph=True
+        # )[0]
+        total_time = time.time() - start_total
+        # print(f"[Timing] cond_fn Total Time: {total_time:.4f}s")
+        
+        # 4. total loss for logging (선택)
+        mse_bg = ((I_degraded - x_lr) ** 2 * mask_bg).mean()
+        # print(f"[t={t.item()}] guidance used - mse_bg: {mse_bg.item():.4f}")
+        # print("##### grad_roi", grad_roi)
+        # print("##### grad_bg", grad_bg)
+        guidance_scale=0.0001 # CGE
         # 5. Gradient from ∇I → ∇z (by backprop from decoder)
-        raw_grad = (grad_roi + grad_bg).to(dtype=x0.dtype)
-        if args is not None:
-            args.last_cge_raw_grad = raw_grad.detach()
-        return -guidance_scale * raw_grad
+        return -guidance_scale * (grad_roi + grad_bg)
 
 
 @dataclass
@@ -581,6 +532,9 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
 
         self.timesteps = torch.from_numpy(timesteps).to(device)
         
+    thread_pool = ThreadPool(processes=12)
+
+    
     def step(
         self,
         model_output: torch.FloatTensor,
@@ -691,70 +645,8 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
         
         # VCM을 위해 추가된 것
         if self.cond_fn is not None:
-            use_pgd_bg_residual = getattr(self, "use_pgd_bg_residual", False)
-            direct_cge_guidance = _as_bool(getattr(self, "direct_cge_guidance", True))
-            should_run_pgd = False
-
-            if use_pgd_bg_residual:
-                pgd_denoise_step_count = int(getattr(self, "pgd_denoise_step_count", 0))
-                pgd_step_count = int(getattr(self, "pgd_step_count", 0))
-                pgd_steps = int(getattr(self, "pgd_steps", 0))
-                pgd_start_step = int(getattr(self, "pgd_start_step", 0))
-                pgd_end_step = getattr(self, "pgd_end_step", None)
-                in_pgd_window = pgd_denoise_step_count >= pgd_start_step and (
-                    pgd_end_step is None or pgd_denoise_step_count < int(pgd_end_step)
-                )
-                should_run_pgd = in_pgd_window and pgd_step_count < pgd_steps
-            else:
-                pgd_denoise_step_count = None
-                pgd_step_count = 0
-                pgd_steps = 0
-
-            should_run_cge = direct_cge_guidance or should_run_pgd
-
-            if should_run_cge:
-                grad = self.cond_fn(
-                    x0=pred_original_sample,
-                    t=timestep,
-                    x_lr=self.x_lr,
-                    mask=self.mask,
-                    decoder=self.decoder,
-                    args=self,
-                )
-                if direct_cge_guidance:
-                    prev_sample = prev_sample + grad  # latent 업데이트
-
-            if use_pgd_bg_residual:
-                raw_grad = getattr(self, "last_cge_raw_grad", None)
-                if should_run_pgd and raw_grad is not None:
-                    bg_mask = self.pgd_bg_mask_latent.to(device=prev_sample.device, dtype=prev_sample.dtype)
-                    residual_bg = self.pgd_residual_bg.to(device=prev_sample.device, dtype=prev_sample.dtype)
-                    raw_grad = raw_grad.to(device=prev_sample.device, dtype=prev_sample.dtype)
-
-                    if bg_mask.shape[0] != prev_sample.shape[0]:
-                        bg_mask = bg_mask[:1].repeat(prev_sample.shape[0], 1, 1, 1)
-                    if residual_bg.shape[0] != prev_sample.shape[0]:
-                        residual_bg = residual_bg[:1].repeat(prev_sample.shape[0], 1, 1, 1)
-
-                    old_residual_bg = residual_bg
-                    pgd_lr = float(getattr(self, "pgd_lr", 1e-2))
-                    residual_sigma = float(getattr(self, "pgd_residual_sigma", 1.0))
-
-                    residual_bg = residual_bg - pgd_lr * raw_grad * bg_mask
-                    residual_bg = project_l2_ball(residual_bg, residual_sigma) * bg_mask
-
-                    delta_residual = residual_bg - old_residual_bg
-                    latent_scale = float(getattr(self, "pgd_latent_scale", getattr(self, "init_noise_sigma", 1.0)))
-                    prev_sample = prev_sample + delta_residual * bg_mask * latent_scale
-
-                    self.pgd_residual_bg = residual_bg.detach()
-                    self.pgd_step_count = pgd_step_count + 1
-                    residual_norm = torch.linalg.vector_norm(
-                        residual_bg.reshape(residual_bg.shape[0], -1).float(), ord=2, dim=1
-                    )
-                    self.pgd_residual_norm_mean = float(residual_norm.mean().detach().cpu())
-                    self.pgd_residual_norm_max = float(residual_norm.max().detach().cpu())
-                self.pgd_denoise_step_count = pgd_denoise_step_count + 1
+            grad = self.cond_fn(x0=pred_original_sample, t=timestep, x_lr=self.x_lr, mask=self.mask, decoder=self.decoder)  # gradient 계산 ( 이때, prev_sample아니라 pred_original_sample 쓰는 이유는? 두개의 차이는?)
+            prev_sample = prev_sample + grad  # latent 업데이트
             
         if eta > 0:
             if variance_noise is not None and generator is not None:

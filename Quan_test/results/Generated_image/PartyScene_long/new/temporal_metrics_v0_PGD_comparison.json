@@ -1,0 +1,57 @@
+{
+  "per_sequence": [
+    {
+      "sequence": ".",
+      "method": "sharedNoise_v0_PGD_3",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.031892566347882255,
+      "warping_error_l2": 0.002914586124766693,
+      "frame_similarity_ssim": 0.7630125804902189
+    },
+    {
+      "sequence": ".",
+      "method": "sharedNoise_v0_PGD_4",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.029136030803490805,
+      "warping_error_l2": 0.0024279002912792583,
+      "frame_similarity_ssim": 0.7763385183325816
+    },
+    {
+      "sequence": ".",
+      "method": "sharedNoise_v0_PGD_5",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.0323718453963731,
+      "warping_error_l2": 0.0030016620708285713,
+      "frame_similarity_ssim": 0.761043770334598
+    }
+  ],
+  "aggregate_by_method": {
+    "sharedNoise_v0_PGD_3": {
+      "sequence_count": 1.0,
+      "frame_count": 150.0,
+      "pair_count": 149.0,
+      "warping_error_l1": 0.031892566347882255,
+      "warping_error_l2": 0.002914586124766693,
+      "frame_similarity_ssim": 0.7630125804902189
+    },
+    "sharedNoise_v0_PGD_4": {
+      "sequence_count": 1.0,
+      "frame_count": 150.0,
+      "pair_count": 149.0,
+      "warping_error_l1": 0.029136030803490805,
+      "warping_error_l2": 0.0024279002912792583,
+      "frame_similarity_ssim": 0.7763385183325816
+    },
+    "sharedNoise_v0_PGD_5": {
+      "sequence_count": 1.0,
+      "frame_count": 150.0,
+      "pair_count": 149.0,
+      "warping_error_l1": 0.0323718453963731,
+      "warping_error_l2": 0.0030016620708285713,
+      "frame_similarity_ssim": 0.761043770334598
+    }
+  }
+}

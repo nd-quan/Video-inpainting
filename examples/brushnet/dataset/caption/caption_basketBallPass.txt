@@ -1,0 +1,150 @@
+0 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+1 A player in red moves across the basketball court as an opposing player in green watches closely.
+2 Two basketball players from opposing teams face each other during a play on the indoor court.
+3 A player in red advances with the ball while a defender in green positions to block the play.
+4 Basketball players from both teams move across the court during an ongoing possession.
+5 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+6 Players from opposing teams compete for position while moving toward the basket.
+7 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+8 A player in red moves across the basketball court as an opposing player in green watches closely.
+9 Two basketball players from opposing teams face each other during a play on the indoor court.
+10 A player in red advances with the ball while a defender in green positions to block the play.
+11 Basketball players from both teams move across the court during an ongoing possession.
+12 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+13 Players from opposing teams compete for position while moving toward the basket.
+14 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+15 A player in red moves across the basketball court as an opposing player in green watches closely.
+16 Two basketball players from opposing teams face each other during a play on the indoor court.
+17 A player in red advances with the ball while a defender in green positions to block the play.
+18 Basketball players from both teams move across the court during an ongoing possession.
+19 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+20 Players from opposing teams compete for position while moving toward the basket.
+21 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+22 A player in red moves across the basketball court as an opposing player in green watches closely.
+23 Two basketball players from opposing teams face each other during a play on the indoor court.
+24 A player in red advances with the ball while a defender in green positions to block the play.
+25 Basketball players from both teams move across the court during an ongoing possession.
+26 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+27 Players from opposing teams compete for position while moving toward the basket.
+28 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+29 A player in red moves across the basketball court as an opposing player in green watches closely.
+30 Two basketball players from opposing teams face each other during a play on the indoor court.
+31 A player in red advances with the ball while a defender in green positions to block the play.
+32 Basketball players from both teams move across the court during an ongoing possession.
+33 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+34 Players from opposing teams compete for position while moving toward the basket.
+35 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+36 A player in red moves across the basketball court as an opposing player in green watches closely.
+37 Two basketball players from opposing teams face each other during a play on the indoor court.
+38 A player in red advances with the ball while a defender in green positions to block the play.
+39 Basketball players from both teams move across the court during an ongoing possession.
+40 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+41 Players from opposing teams compete for position while moving toward the basket.
+42 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+43 A player in red moves across the basketball court as an opposing player in green watches closely.
+44 Two basketball players from opposing teams face each other during a play on the indoor court.
+45 A player in red advances with the ball while a defender in green positions to block the play.
+46 Basketball players from both teams move across the court during an ongoing possession.
+47 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+48 Players from opposing teams compete for position while moving toward the basket.
+49 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+50 A player in red moves across the basketball court as an opposing player in green watches closely.
+51 Two basketball players from opposing teams face each other during a play on the indoor court.
+52 A player in red advances with the ball while a defender in green positions to block the play.
+53 Basketball players from both teams move across the court during an ongoing possession.
+54 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+55 Players from opposing teams compete for position while moving toward the basket.
+56 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+57 A player in red moves across the basketball court as an opposing player in green watches closely.
+58 Two basketball players from opposing teams face each other during a play on the indoor court.
+59 A player in red advances with the ball while a defender in green positions to block the play.
+60 Basketball players from both teams move across the court during an ongoing possession.
+61 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+62 Players from opposing teams compete for position while moving toward the basket.
+63 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+64 A player in red moves across the basketball court as an opposing player in green watches closely.
+65 Two basketball players from opposing teams face each other during a play on the indoor court.
+66 A player in red advances with the ball while a defender in green positions to block the play.
+67 Basketball players from both teams move across the court during an ongoing possession.
+68 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+69 Players from opposing teams compete for position while moving toward the basket.
+70 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+71 A player in red moves across the basketball court as an opposing player in green watches closely.
+72 Two basketball players from opposing teams face each other during a play on the indoor court.
+73 A player in red advances with the ball while a defender in green positions to block the play.
+74 Basketball players from both teams move across the court during an ongoing possession.
+75 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+76 Players from opposing teams compete for position while moving toward the basket.
+77 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+78 A player in red moves across the basketball court as an opposing player in green watches closely.
+79 Two basketball players from opposing teams face each other during a play on the indoor court.
+80 A player in red advances with the ball while a defender in green positions to block the play.
+81 Basketball players from both teams move across the court during an ongoing possession.
+82 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+83 Players from opposing teams compete for position while moving toward the basket.
+84 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+85 A player in red moves across the basketball court as an opposing player in green watches closely.
+86 Two basketball players from opposing teams face each other during a play on the indoor court.
+87 A player in red advances with the ball while a defender in green positions to block the play.
+88 Basketball players from both teams move across the court during an ongoing possession.
+89 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+90 Players from opposing teams compete for position while moving toward the basket.
+91 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+92 A player in red moves across the basketball court as an opposing player in green watches closely.
+93 Two basketball players from opposing teams face each other during a play on the indoor court.
+94 A player in red advances with the ball while a defender in green positions to block the play.
+95 Basketball players from both teams move across the court during an ongoing possession.
+96 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+97 Players from opposing teams compete for position while moving toward the basket.
+98 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+99 A player in red moves across the basketball court as an opposing player in green watches closely.
+100 Two basketball players from opposing teams face each other during a play on the indoor court.
+101 A player in red advances with the ball while a defender in green positions to block the play.
+102 Basketball players from both teams move across the court during an ongoing possession.
+103 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+104 Players from opposing teams compete for position while moving toward the basket.
+105 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+106 A player in red moves across the basketball court as an opposing player in green watches closely.
+107 Two basketball players from opposing teams face each other during a play on the indoor court.
+108 A player in red advances with the ball while a defender in green positions to block the play.
+109 Basketball players from both teams move across the court during an ongoing possession.
+110 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+111 Players from opposing teams compete for position while moving toward the basket.
+112 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+113 A player in red moves across the basketball court as an opposing player in green watches closely.
+114 Two basketball players from opposing teams face each other during a play on the indoor court.
+115 A player in red advances with the ball while a defender in green positions to block the play.
+116 Basketball players from both teams move across the court during an ongoing possession.
+117 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+118 Players from opposing teams compete for position while moving toward the basket.
+119 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+120 A player in red moves across the basketball court as an opposing player in green watches closely.
+121 Two basketball players from opposing teams face each other during a play on the indoor court.
+122 A player in red advances with the ball while a defender in green positions to block the play.
+123 Basketball players from both teams move across the court during an ongoing possession.
+124 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+125 Players from opposing teams compete for position while moving toward the basket.
+126 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+127 A player in red moves across the basketball court as an opposing player in green watches closely.
+128 Two basketball players from opposing teams face each other during a play on the indoor court.
+129 A player in red advances with the ball while a defender in green positions to block the play.
+130 Basketball players from both teams move across the court during an ongoing possession.
+131 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+132 Players from opposing teams compete for position while moving toward the basket.
+133 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+134 A player in red moves across the basketball court as an opposing player in green watches closely.
+135 Two basketball players from opposing teams face each other during a play on the indoor court.
+136 A player in red advances with the ball while a defender in green positions to block the play.
+137 Basketball players from both teams move across the court during an ongoing possession.
+138 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+139 Players from opposing teams compete for position while moving toward the basket.
+140 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+141 A player in red moves across the basketball court as an opposing player in green watches closely.
+142 Two basketball players from opposing teams face each other during a play on the indoor court.
+143 A player in red advances with the ball while a defender in green positions to block the play.
+144 Basketball players from both teams move across the court during an ongoing possession.
+145 A player in red dribbles the ball near a defender in green on the indoor basketball court.
+146 Players from opposing teams compete for position while moving toward the basket.
+147 A basketball player in a red uniform dribbles the ball while a defender in a green uniform stands nearby on an indoor court.
+148 A player in red moves across the basketball court as an opposing player in green watches closely.
+149 Two basketball players from opposing teams face each other during a play on the indoor court.

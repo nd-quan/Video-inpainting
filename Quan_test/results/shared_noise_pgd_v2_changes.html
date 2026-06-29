@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shared Noise Prior Version 2 - Change Monitor</title>
+  <style>
+    body {
+      margin: 32px;
+      color: #1f2933;
+      background: #f7f8fa;
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.55;
+    }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #d9dee7;
+      border-radius: 8px;
+      padding: 28px 32px;
+    }
+    h1, h2, h3 {
+      color: #111827;
+      line-height: 1.25;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 30px;
+    }
+    h2 {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid #e5e7eb;
+      font-size: 22px;
+    }
+    code {
+      background: #eef2f7;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 0.95em;
+    }
+    pre {
+      overflow-x: auto;
+      background: #101828;
+      color: #f8fafc;
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 14px;
+    }
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 12px 0 20px;
+      background: #ffffff;
+    }
+    th, td {
+      border: 1px solid #d7dce5;
+      padding: 10px 12px;
+      vertical-align: top;
+    }
+    th {
+      background: #eef2f7;
+      text-align: left;
+    }
+    .note {
+      background: #fff8e6;
+      border: 1px solid #f0d58c;
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .ok {
+      color: #047857;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Shared Noise Prior Version 2 - Change Monitor</h1>
+  <p>
+    This note records the implementation of <strong>Version 2: Optimized BG Residual</strong>
+    with the existing correction gradient estimator (CGE) for background restoration.
+  </p>
+
+  <h2>Modified Files</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>examples/brushnet/diffusers/pipelines/brushnet/pipeline_brushnet_sharedNoise_PGD_v0.py</code></td>
+        <td>Implements clip-level shared BG noise, BG residual initialization, and scheduler-driven PGD residual updates.</td>
+      </tr>
+      <tr>
+        <td><code>examples/brushnet/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_CGE.py</code></td>
+        <td>Runs the IP-Adapter fusion pipeline with <code>CustomDDIMScheduler</code>, <code>cond_fn</code>, and clip batching.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Version 2 Formula</h2>
+  <p>
+    For each clip <code>C_k</code>, the shared background seed is computed as the mean of the initial
+    random noise of all frames in the clip:
+  </p>
+  <pre><code>z_shared_bg,k = mean({z_T^i | i in C_k})</code></pre>
+  <p>
+    Each frame then uses a constrained BG residual:
+  </p>
+  <pre><code>z_hat_T^i = z_T^i * ROI_mask^i + (z_shared_bg,k + r_i^BG) * BG_mask^i
+||r_i^BG||_2 <= sigma</code></pre>
+
+  <h2>Pipeline Changes</h2>
+  <p>New pipeline arguments:</p>
+  <pre><code>use_shared_bg_noise: bool = False
+shared_bg_noise: Optional[torch.FloatTensor] = None
+shared_bg_noise_strength: float = 1.0
+use_pgd_bg_residual: bool = False
+residual_sigma: float = 1.0
+residual_init_scale: float = 1.0</code></pre>
+
+  <p>Key implementation behavior:</p>
+  <ul>
+    <li><code>original_mask</code> is converted inside the pipeline so that <code>BG = 1</code> and <code>ROI = 0</code>.</li>
+    <li>If <code>shared_bg_noise=None</code>, the pipeline computes <code>z_shared_bg</code> from the clip batch mean.</li>
+    <li><code>residual_bg = noise - z_shared_bg</code> is applied only on BG and projected to an L2 ball.</li>
+    <li>The scheduler stores <code>residual_bg</code>, <code>bg_mask_latent</code>, <code>pgd_lr</code>, <code>pgd_steps</code>, and the PGD denoising window.</li>
+    <li>During DDIM sampling, CGE stores the raw gradient and the scheduler updates <code>residual_bg</code> with PGD.</li>
+    <li>ROI keeps the original per-frame noise.</li>
+  </ul>
+
+  <h2>PGD Residual Update</h2>
+  <p>
+    The current implementation performs residual updates inside <code>CustomDDIMScheduler.step()</code>.
+    The CGE function returns the normal guidance update and also stores the raw gradient before
+    <code>guidance_scale</code> is applied.
+  </p>
+  <pre><code>raw_grad = dL / dz
+if pgd_start_step <= denoise_step &lt; pgd_end_step:
+residual_bg = residual_bg - pgd_lr * raw_grad * BG_mask
+residual_bg = project_l2_ball(residual_bg, residual_sigma) * BG_mask
+prev_sample = prev_sample + (residual_bg_new - residual_bg_old) * BG_mask</code></pre>
+  <p>
+    This is a practical PGD residual update coupled to the DDIM/CGE loop. It avoids an expensive outer loop that
+    would rerun the entire diffusion process for every PGD iteration.
+  </p>
+  <p>
+    The current test default uses <code>PGD_START_STEP=10</code> and <code>PGD_END_STEP=20</code>, so CGE/PGD is
+    delayed until the decoded prediction is less noisy. The end index is exclusive.
+  </p>
+
+  <h2>Test Script Changes</h2>
+  <p>The test script now imports the PGD pipeline and CGE scheduler:</p>
+  <pre><code>from diffusers.pipelines.brushnet.pipeline_brushnet_sharedNoise_PGD_v0 import StableDiffusionBrushNetPipeline
+from diffusers.schedulers.scheduling_ddim_CGE import CustomDDIMScheduler, cond_fn</code></pre>
+
+  <p>The scheduler is changed from normal DDIM to CGE DDIM:</p>
+  <pre><code>pipe.scheduler = CustomDDIMScheduler.from_config(pipe.scheduler.config)</code></pre>
+
+  <p>For each clip, the script prepares a batch of frames and activates CGE:</p>
+  <pre><code>pipe.scheduler.x_lr = torch.cat(x_lr_tensors, dim=0)
+pipe.scheduler.mask = torch.cat(mask_tensors, dim=0)
+pipe.scheduler.decoder = pipe.vae.decode
+pipe.scheduler.cond_fn = cond_fn</code></pre>
+
+  <p>The pipeline is called with Version 2 enabled:</p>
+  <pre><code>result = ip_model.generate_fgbg(
+    fg_pil_image=fg_list,
+    bg_pil_image=bg_list,
+    prompt=prompt_list,
+    image=init_list,
+    mask_image=mask_list,
+    num_samples=1,
+    num_inference_steps=50,
+    generator=generator,
+    use_pgd_bg_residual=True,
+    pgd_steps=pgd_steps,
+    pgd_start_step=pgd_start_step,
+    pgd_end_step=pgd_end_step,
+    pgd_lr=pgd_lr,
+    residual_sigma=residual_sigma,
+    residual_init_scale=residual_init_scale,
+    shared_bg_noise_strength=shared_bg_noise_strength,
+)</code></pre>
+
+  <h2>How To Run</h2>
+  <p>Run from the BrushNet example directory:</p>
+  <pre><code>cd /media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet
+CUDA_VISIBLE_DEVICES=0 python test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_CGE.py</code></pre>
+
+  <h2>How To Copy Codex Diff Into A Runnable File</h2>
+  <div class="note">
+    <p>
+      In this workspace, Codex already edited the actual runnable files directly. Therefore,
+      no manual copy is needed for the current two files.
+    </p>
+  </div>
+  <p>If you want to copy these changes into another experiment file, use one of these options:</p>
+  <ol>
+    <li>
+      Duplicate the current runnable test file and then edit only paths/output names:
+      <pre><code>cp test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_CGE.py test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_CGE_v2_run.py</code></pre>
+    </li>
+    <li>
+      Manually copy the import/scheduler/clip-batch sections from the CGE test file into the target test file.
+    </li>
+    <li>
+      Keep the pipeline import pointing to:
+      <pre><code>pipeline_brushnet_sharedNoise_PGD_v0</code></pre>
+    </li>
+    <li>
+      Make sure the call to <code>generate_fgbg</code> includes:
+      <pre><code>num_samples=1
+use_pgd_bg_residual=True
+pgd_steps=pgd_steps
+pgd_lr=pgd_lr
+residual_sigma=residual_sigma
+residual_init_scale=residual_init_scale
+shared_bg_noise_strength=shared_bg_noise_strength</code></pre>
+    </li>
+  </ol>
+
+  <h2>Validation</h2>
+  <p class="ok">Passed syntax checks:</p>
+  <pre><code>python -m py_compile examples/brushnet/diffusers/pipelines/brushnet/pipeline_brushnet_sharedNoise_PGD_v0.py
+python -m py_compile examples/brushnet/diffusers/schedulers/scheduling_ddim_CGE.py
+python -m py_compile examples/brushnet/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_CGE.py
+python -m pyflakes examples/brushnet/diffusers/schedulers/scheduling_ddim_CGE.py</code></pre>
+
+  <h2>VVC Runtime Fix</h2>
+  <p>
+    The original VVC binary at <code>model_naeun/paper/VVC_Python/vvencFFapp</code> fails on this machine because
+    it requires newer <code>GLIBC</code> and <code>GLIBCXX</code> versions. This caused <code>vvc_func_512</code>
+    to miss <code>output_*.png</code> and crash with <code>FileNotFoundError</code>.
+  </p>
+  <p>The CGE scheduler now defaults to the compatible encoder:</p>
+  <pre><code>/media/ssd1/ndquan/TGDR/VVC/vvencFFapp</code></pre>
+  <p>You can override it when running with:</p>
+  <pre><code>CGE_VVC_ENCODER=/path/to/vvencFFapp</code></pre>
+  <p>
+    The VVC temporary directory is now kept only when VVC fails, so the remaining files can be inspected.
+    Set <code>CGE_KEEP_VVC_LOGS=1</code> to keep successful VVC folders as well.
+  </p>
+
+  <h2>Important Note</h2>
+  <p>
+    This implementation now updates <code>residual_bg</code> with PGD during DDIM steps using the raw CGE gradient.
+    It is not an outer-loop optimizer that reruns the full denoising process several times; instead, it couples
+    PGD residual updates to the existing sampling loop for lower memory cost.
+  </p>
+</main>
+</body>
+</html>

@@ -1,0 +1,2 @@
+sequence,method,frame_count,pair_count,warping_error_l1,warping_error_l2,frame_similarity_ssim
+.,sharedNoise_mean_32_v0_PGD,150,149,0.02548408827075622,0.001844376913153085,0.8054717000432197

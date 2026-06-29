@@ -1,0 +1,90 @@
+0 Horses and riders move across a grassy race field while another horse remains partially visible at the edge of the scene.
+1 The riders guide their horses steadily through the grass with surrounding horses creating a natural racing environment.
+2 A horse walks forward across the field while another horse appears partially in the foreground.
+3 The grassy racecourse provides a natural background as horses and riders move calmly through the scene.
+4 Multiple horses occupy the race field while the foreground horse advances toward the camera.
+5 Riders and horses travel across the open grass with nearby horses contributing to the racing atmosphere.
+6 The foreground horse moves steadily through the field while another horse remains visible on the left side.
+7 Horses and riders interact naturally within the racecourse environment surrounded by green grass and neighboring horses.
+8 The horse approaches the center of the scene while the grassy field extends across the background.
+9 A rider leads the horse forward as another horse gradually leaves the edge of the frame.
+10 The race field supports the movement of horses and riders with open grass covering the background.
+11 The foreground horse advances calmly while a second horse remains positioned behind it.
+12 Horses and riders move together across the grass in a typical racecourse setting.
+13 The horse continues forward through the field while its tail moves naturally with its motion.
+14 Riders maintain a steady pace as horses travel across the grassy racing ground.
+15 The foreground horse walks through the open field surrounded by grass and nearby horses.
+16 A horse and rider move naturally through the racecourse while another horse follows behind.
+17 The horse advances toward the viewer with the grassy field providing a consistent background.
+18 Horses remain distributed across the race field while the foreground horse continues its movement.
+19 The rider guides the horse forward across the grass with the racecourse extending throughout the scene.\
+20 A racehorse moves forward across the grassy field while its rider maintains a steady posture in the saddle.
+21 The horse and rider advance through the racecourse with green grass covering the entire background.
+22 A rider guides the horse calmly across the field as the horse continues moving toward the camera.
+23 The horse walks steadily through the grass while its tail extends outward behind its body.
+24 The racecourse provides a natural environment for the horse and rider moving through the scene.
+25 The horse progresses forward with the rider maintaining control using the reins.
+26 A close-up view highlights the horse and rider traveling across the grassy field.
+27 The horse approaches the center of the frame while the rider remains seated securely in the saddle.
+28 The grassy race field surrounds the horse as it continues its forward movement.
+29 A rider and horse travel together through the racecourse with the green field extending in all directions.
+30 The horse advances toward the viewer while its mane and tail move naturally with motion.
+31 The rider maintains a balanced posture as the horse proceeds steadily across the grass.
+32 A racehorse moves calmly through the field while another horse remains partially visible behind it.
+33 The horse continues forward along the racecourse with the rider holding the reins firmly.
+34 The grassy background supports the movement of horses and riders in a typical racing environment.
+35 The horse and rider remain centered in the scene while traveling across the open field.
+36 A forward-moving horse occupies the foreground as another horse follows closely behind.
+37 The rider guides the horse through the grass with both remaining aligned along the racecourse path.
+38 The horse approaches the camera while the surrounding field remains clear and unobstructed.
+39 Horses and riders move naturally across the grassy racecourse in a calm pre-race setting.
+40 A racehorse walks steadily across the grassy field while its rider maintains a balanced posture and firm control of the reins.
+41 The horse and rider move calmly through the racecourse with green grass extending across the entire background.
+42 A rider guides the horse forward as another horse and rider remain visible behind them on the field.
+43 The racehorse advances toward the camera while the rider remains seated securely in the saddle.
+44 Horses and riders travel together through the grassy racecourse in a natural outdoor setting.
+45 The horse continues moving forward while the rider maintains a stable position and consistent control.
+46 A close-up view highlights the horse and rider progressing across the open green field.
+47 The horse approaches the center of the frame with another horse following closely behind.
+48 The grassy racecourse provides a natural background for horses and riders moving through the scene.
+49 A rider and horse advance steadily while the surrounding field remains open and unobstructed.
+50 The horse proceeds calmly through the grass with its rider holding the reins throughout the movement.
+51 Horses and riders remain aligned along the racecourse as they move naturally across the field.
+52 The horse occupies the foreground while a second horse follows directly behind in the background.
+53 A racehorse and rider travel together through the grassy environment with smooth forward motion.
+54 The rider maintains a controlled posture while guiding the horse along the racecourse.
+55 The horse advances through the field with another horse partially visible behind its right side.
+56 The green racecourse surrounds the horses as they continue moving forward in an organized formation.
+57 A close-up perspective captures the horse and rider approaching the camera across the grass.
+58 The horse progresses steadily while the rider remains focused and maintains control of the reins.
+59 Horses and riders move naturally across the grassy racecourse in a calm pre-race atmosphere.
+60 A racehorse and rider move steadily across the grassy racecourse while another horse follows closely behind.
+61 The leading horse advances calmly through the field as the rider maintains control of the reins.
+62 Two horses and riders travel together across the open grass in a natural outdoor setting.
+63 The horse in the foreground proceeds forward while a second horse remains visible directly behind it.
+64 Riders guide their horses along the racecourse with green grass covering the surrounding background.
+65 The leading horse moves at a relaxed pace while the rider maintains a balanced riding posture.
+66 Two racehorses remain aligned on the field as they continue moving through the grassy environment.
+67 The foreground horse and rider approach the camera while another horse follows in the same direction.
+68 Horses and riders progress naturally across the racecourse with the open field extending around them.
+69 The rider maintains steady control while the horse advances calmly across the grass-covered terrain.
+70 A close-up view shows two horses traveling together through the outdoor racecourse environment.
+71 The leading horse occupies the foreground while the following horse remains clearly visible behind it.
+72 Riders and horses move in formation across the grassy field under natural daylight conditions.
+73 The horse continues forward with a controlled gait while the rider remains securely seated.
+74 Two horses travel along the racecourse with their riders maintaining consistent direction and pace.
+75 The grassy field provides a natural background for the horses and riders moving through the scene.
+76 A racehorse advances through the foreground while another horse follows closely in the background.
+77 The riders guide their horses steadily across the open field with calm and controlled movement.
+78 Horses and riders remain grouped together as they proceed along the racecourse.
+79 The scene captures two racehorses moving naturally through the grassy environment with riders maintaining control.
+80 Horses and riders progress naturally across the racecourse with the open field extending around them.
+81 The rider maintains steady control while the horse advances calmly across the grass-covered terrain.
+82 A close-up view shows two horses traveling together through the outdoor racecourse environment.
+83 The leading horse occupies the foreground while the following horse remains clearly visible behind it.
+84 Riders and horses move in formation across the grassy field under natural daylight conditions.
+85 The horse continues forward with a controlled gait while the rider remains securely seated.
+86 Two horses travel along the racecourse with their riders maintaining consistent direction and pace.
+87 The grassy field provides a natural background for the horses and riders moving through the scene.
+88 A racehorse advances through the foreground while another horse follows closely in the background.
+89 The riders guide their horses steadily across the open field with calm and controlled movement.

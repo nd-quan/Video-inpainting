@@ -1,0 +1,93 @@
+{
+  "per_sequence": [
+    {
+      "sequence": "BasketballPass",
+      "method": "frameBase",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.03143846293623816,
+      "warping_error_l2": 0.0023246044027400298,
+      "frame_similarity_ssim": 0.6602511188594553
+    },
+    {
+      "sequence": "BasketballPass",
+      "method": "sharedNoise_v0",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.021632712865685858,
+      "warping_error_l2": 0.0012655885530332566,
+      "frame_similarity_ssim": 0.7773884065465905
+    },
+    {
+      "sequence": "PartyScene",
+      "method": "sharedNoise_v0",
+      "frame_count": 100,
+      "pair_count": 99,
+      "warping_error_l1": 0.02984415457555742,
+      "warping_error_l2": 0.0024188890573427534,
+      "frame_similarity_ssim": 0.7809245211106759
+    },
+    {
+      "sequence": "PartyScene",
+      "method": "sharedNoise_v1",
+      "frame_count": 100,
+      "pair_count": 99,
+      "warping_error_l1": 0.02984415457555742,
+      "warping_error_l2": 0.0024188890573427534,
+      "frame_similarity_ssim": 0.7809245211106759
+    },
+    {
+      "sequence": "PartyScene_long",
+      "method": "sharedNoise_v0",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.030819259683957836,
+      "warping_error_l2": 0.002618085267178514,
+      "frame_similarity_ssim": 0.7814064823274377
+    },
+    {
+      "sequence": "RaceHorses",
+      "method": "frameBase",
+      "frame_count": 90,
+      "pair_count": 89,
+      "warping_error_l1": 0.036779553242278905,
+      "warping_error_l2": 0.003328891966774474,
+      "frame_similarity_ssim": 0.4482950188693929
+    },
+    {
+      "sequence": "RaceHorses",
+      "method": "sharedNoise_v0",
+      "frame_count": 90,
+      "pair_count": 89,
+      "warping_error_l1": 0.030393280277258895,
+      "warping_error_l2": 0.0023857495313238226,
+      "frame_similarity_ssim": 0.55439635352249
+    }
+  ],
+  "aggregate_by_method": {
+    "frameBase": {
+      "sequence_count": 2.0,
+      "frame_count": 240.0,
+      "pair_count": 238.0,
+      "warping_error_l1": 0.033435761412026505,
+      "warping_error_l2": 0.0027001573153411455,
+      "frame_similarity_ssim": 0.5809902243253564
+    },
+    "sharedNoise_v0": {
+      "sequence_count": 4.0,
+      "frame_count": 490.0,
+      "pair_count": 486.0,
+      "warping_error_l1": 0.027726166990850076,
+      "warping_error_l2": 0.0021203068398689437,
+      "frame_similarity_ssim": 0.7385046121310467
+    },
+    "sharedNoise_v1": {
+      "sequence_count": 1.0,
+      "frame_count": 100.0,
+      "pair_count": 99.0,
+      "warping_error_l1": 0.02984415457555742,
+      "warping_error_l2": 0.0024188890573427534,
+      "frame_similarity_ssim": 0.7809245211106759
+    }
+  }
+}

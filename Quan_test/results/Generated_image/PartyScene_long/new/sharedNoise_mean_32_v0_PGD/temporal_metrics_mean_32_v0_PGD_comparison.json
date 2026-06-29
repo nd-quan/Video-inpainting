@@ -1,0 +1,23 @@
+{
+  "per_sequence": [
+    {
+      "sequence": ".",
+      "method": "sharedNoise_mean_32_v0_PGD",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.02548408827075622,
+      "warping_error_l2": 0.001844376913153085,
+      "frame_similarity_ssim": 0.8054717000432197
+    }
+  ],
+  "aggregate_by_method": {
+    "sharedNoise_mean_32_v0_PGD": {
+      "sequence_count": 1.0,
+      "frame_count": 150.0,
+      "pair_count": 149.0,
+      "warping_error_l1": 0.02548408827075622,
+      "warping_error_l2": 0.001844376913153085,
+      "frame_similarity_ssim": 0.8054717000432197
+    }
+  }
+}

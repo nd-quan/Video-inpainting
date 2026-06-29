@@ -1,0 +1,7 @@
+Frames:   100
+PSNR:     23.0156 dB
+SSIM:     0.666967
+MS-SSIM:  0.767371
+LPIPS:    0.278408
+FID:      76.6215
+FVD:      0.0471
