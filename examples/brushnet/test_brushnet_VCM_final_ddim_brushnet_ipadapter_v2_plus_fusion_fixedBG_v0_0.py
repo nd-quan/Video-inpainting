@@ -43,31 +43,23 @@ torch.backends.cudnn.deterministic = True
 device="cuda"
 
 # 설정
-# image_dir = "/home/gpu_01/nas_naeun/data/data/test_in_COCO" # coco
 # image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512/images' # open
-# image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/images' # open
+image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/images' # open
 # image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/images' # open  
-image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/images' # open  
+# image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/images' # open  
 
-# image_dir="/media/ssd2/naeun/NAS_NE/data/data/New/synthesis_COCO"
-
-# mask_dir = "/home/gpu_01/nas_naeun/data/data/test_mask_COCO" # coco
-# mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/masks' # open
+mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/masks' # open
 # mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/masks' # open
-mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/masks' # open
-
-# mask_dir="/media/ssd2/naeun/NAS_NE/data/data/New/mask_COCO"
+# mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/masks' # open
 
 # caption_txt = "/media/ssd2/naeun/ws04/BrushNet/dataset/opendataset/captions_test_openimage.txt" #open(ws09)
 # caption_txt='/home/gpu_01/nas_naeun/data/data/caption/test/captions_test_COCO.txt' #coco(ws09)
 # caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_raceHorses.txt" # A100
-caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_basketBallPass.txt" # A100
-# caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_partyScene.txt" # A100
+# caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_basketBallPass.txt" # A100
+caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_partyScene.txt" # A100
 
-# output_dir = "/media/hdd/naeun/save/BrushNet_200000"
-# output_dir = "/media/hdd/naeun/save/test_with_originalcaption/Brushnet_200000"
-# output_dir='/media/hdd/naeun/save/Opendataset/BrushNet_300000'
-output_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/fixedBG_strength_05_v0_0'
+
+output_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene/new/fixedBG_strength_09_corr'
 # test 15는 14에서 그냥 copy&paste
 # test 16은 blending을 반대로 
 if not os.path.exists(output_dir):
@@ -75,10 +67,6 @@ if not os.path.exists(output_dir):
 
 # base_model_path = "lambdalabs/miniSD-diffusers"
 base_model_path="stable-diffusion-v1-5/stable-diffusion-v1-5" #512
-# brushnet_path = "/media/hdd/naeun/save/checkpoint/Checkpoint_brushNet_200000"
-# brushnet_path="/media/ssd2/naeun/ws04/BrushNet_previous/examples/brushnet/pretrained_brushnet/brushnet"
-# brushnet_path="/media/ssd2/naeun/NAS_NE/checkpoint/Checkpoint_brushnet_512/checkpoint-600000/brushnet"
-# brushnet_path="/home/gpu_01/naeun/v8/checkpoint-300000/brushnet"
 
 
 brushnet_path="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
@@ -126,7 +114,7 @@ ip_model = FusionIPAdapter(
 
 generator = torch.Generator("cuda").manual_seed(1234)
 
-shared_bg_generator = torch.Generator(device).manual_seed(1234)
+shared_bg_generator = torch.Generator(device).manual_seed(6789)
 shared_bg_noise = torch.randn(
     (
         1,
@@ -166,8 +154,6 @@ print(f"[Resume] 총 {len(indexed_all)}개 중 이미 {len(indexed_all) - len(in
       f"{len(indexed_pending)}개 생성 예정.")
 
 
-# """ # ----------- naeun code -----------
-
 # ========================================================================
 for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(indexed_pending)):
     init_image_np = cv2.imread(image_path)[:, :, ::-1]
@@ -203,7 +189,8 @@ for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(
     generator=generator,
     use_shared_bg_noise=True,
     shared_bg_noise=shared_bg_noise,
-    shared_bg_noise_strength=0.5,  # tested value: 1
+    shared_bg_noise_strength=1,
+    variance_preserving_shared_noise = False,
     )
     
     # image = result.images[0]

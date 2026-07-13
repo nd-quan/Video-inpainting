@@ -1,6 +1,6 @@
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+import math
 import numpy as np
 import PIL.Image
 import torch
@@ -217,6 +217,7 @@ class StableDiffusionBrushNetPipeline(
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True)
+        self._cached_shared_bg_noise = None
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt
@@ -849,6 +850,7 @@ class StableDiffusionBrushNetPipeline(
         use_shared_bg_noise: bool = False,
         shared_bg_noise: Optional[torch.FloatTensor] = None,
         shared_bg_noise_strength: float = 1.0,
+        variance_preserving_shared_noise: bool = False,
 
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
@@ -1127,6 +1129,11 @@ class StableDiffusionBrushNetPipeline(
         # Share only the initial background noise across frames/samples.
         # original_mask is 1 on BG and 0 on ROI after the binarization above.
         if use_shared_bg_noise or shared_bg_noise is not None:
+            
+            ########## debug 1
+
+            print(f"DEBUG_1: original_mask.shape: {original_mask.shape}, latents.shape: {latents.shape}, noise.shape: {noise.shape}")
+
             latent_batch = latents.shape[0]
             bg_mask_latent = torch.nn.functional.interpolate(
                 original_mask[:latent_batch].to(device=device, dtype=latents.dtype),
@@ -1136,10 +1143,26 @@ class StableDiffusionBrushNetPipeline(
 
             if bg_mask_latent.shape[0] != latent_batch:
                 bg_mask_latent = bg_mask_latent[:1].repeat(latent_batch, 1, 1, 1)
+                print(f"DEBUG_2: bg_mask_latent.shape: {bg_mask_latent.shape}, latents.shape: {latents.shape}, noise.shape: {noise.shape}")
+
 
             if shared_bg_noise is None:
-                shared_bg_noise = noise[:1]
+                cached_shared_bg_noise = getattr(self, "_cached_shared_bg_noise", None)
+                if (
+                    cached_shared_bg_noise is None
+                    or cached_shared_bg_noise.shape[1] != noise.shape[1]
+                    or cached_shared_bg_noise.shape[-2:] != noise.shape[-2:]
+                ):
+                    cached_shared_bg_noise = randn_tensor(
+                        (1, noise.shape[1], noise.shape[-2], noise.shape[-1]),
+                        generator=generator,
+                        device=device,
+                        dtype=latents.dtype,
+                    )
+                    self._cached_shared_bg_noise = cached_shared_bg_noise.detach().clone()
+                shared_bg_noise = cached_shared_bg_noise.to(device=device, dtype=latents.dtype)
             else:
+                print(f"DEBUG3: shared_bg_noise.shape: {shared_bg_noise.shape}, latents.shape: {latents.shape}, noise.shape: {noise.shape}")
                 shared_bg_noise = shared_bg_noise.to(device=device, dtype=latents.dtype)
                 if shared_bg_noise.ndim == 3:
                     shared_bg_noise = shared_bg_noise.unsqueeze(0)
@@ -1155,11 +1178,24 @@ class StableDiffusionBrushNetPipeline(
                         mode="nearest",
                     )
                 shared_bg_noise = shared_bg_noise[:1]
+                self._cached_shared_bg_noise = shared_bg_noise.detach().clone()
 
             shared_bg_noise = shared_bg_noise.expand_as(noise)
-            bg_mix = bg_mask_latent * max(0.0, min(1.0, float(shared_bg_noise_strength)))
+            shared_strength = max(0.0, min(1.0, float(shared_bg_noise_strength)))
 
-            noise = noise * (1.0 - bg_mix) + shared_bg_noise * bg_mix
+            # bg_mix = bg_mask_latent * max(0.0, min(1.0, float(shared_bg_noise_strength)))
+            if variance_preserving_shared_noise and shared_bg_noise is not None and shared_strength > 0.0:
+                # Treat shared_strength as the target inter-frame BG correlation rho.
+                shared_weight = math.sqrt(shared_strength)
+                independent_weight = math.sqrt(1.0 - shared_strength)
+                mixed_bg_noise = independent_weight * noise + shared_weight * shared_bg_noise
+                noise = noise * (1.0 - bg_mask_latent) + mixed_bg_noise * bg_mask_latent
+            else:
+                bg_mix = bg_mask_latent * shared_strength
+                if shared_bg_noise is not None:
+                    noise = noise * (1.0 - bg_mix) + shared_bg_noise * bg_mix
+
+            # noise = noise * (1.0 - bg_mix) + shared_bg_noise * bg_mix
             latents = noise * self.scheduler.init_noise_sigma
 
 
@@ -1300,6 +1336,11 @@ class StableDiffusionBrushNetPipeline(
             torch.cuda.empty_cache()
 
         if not output_type == "latent":
+            if not bool(torch.isfinite(latents).all()):
+                raise FloatingPointError(
+                    "Non-finite latent values detected before the final VAE decode. "
+                    "The generated image would otherwise be silently converted to black pixels."
+                )
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[
                 0
             ]
@@ -2509,4 +2550,3 @@ class StableDiffusionBrushNetPipeline_v02(
             return (image, has_nsfw_concept)
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
-

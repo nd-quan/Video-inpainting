@@ -2,24 +2,29 @@ import cv2
 import os
 
 # img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/frameBase"
-img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/new/sharedNoise_fixedBG_CGE_v0_2"
+# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/new/sharedNoise_fixedBG_CGE_v0_2"
 
 
 # img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/sharedNoise_v0"
 # img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/frameBase"
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/gt"
+# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/gt"
 # img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/images"
 
 
 # img_dir = "//media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/images"
-img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/sharedNoise_fixedBG_PGD_v0"
+# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/fixedBG_nulltext_checkpoint3500" 
+img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/fixedBG_nulltext_checkpoint3500_09_corr" 
+
 
 
 # vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/party_scene_sharedNoise_v1.mp4"
-# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/BasketballPass_gt.mp4"
-# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/BasketballPass_input.mp4"
+# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/PartyScene_gt_new.mp4"
+
+# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/PartyScene_input.mp4"
 # vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/sharedNoise_fixedBG_CGE_v0_2.mp4"
-vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/BasketballPass/sharedNoise_fixedBG_PGD_v0.mp4"
+vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/BasketballPass/fixedBG_nulltext_checkpoint3500_09_corr.mp4"
+# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/BasketballPass/fixedBG_nulltext_checkpoint3500.mp4"
+
 
 # vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/video/party_scene_input.mp4"
 

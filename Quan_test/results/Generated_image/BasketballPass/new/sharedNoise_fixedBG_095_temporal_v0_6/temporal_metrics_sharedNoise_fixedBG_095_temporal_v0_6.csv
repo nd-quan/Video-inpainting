@@ -1,0 +1,2 @@
+sequence,method,frame_count,pair_count,warping_error_l1,warping_error_l2,frame_similarity_ssim
+.,sharedNoise_fixedBG_095_temporal_v0_6,150,149,0.024252122730616756,0.0015420750609361534,0.737495825928063

@@ -288,20 +288,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/new/sharedNoise_fixedBG_PGD_v0"),
+        default=Path("/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene/new/fixedBG_nulltext_checkpoint3500_noSharedNoise"),
+        # default=Path("/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/fixedBG_nulltext_checkpoint3500"),
+
         help="Root folder containing generated frames as <sequence>/<method>/*.png.",
     )
     parser.add_argument(
         "--csv",
         type=Path,
         default=None,
-        help="CSV output path. Default: <root>/temporal_metrics_fixedBG_PGD_v0_comparison.csv",
+        help="CSV output path. Default: <root>/temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.csv",
     )
     parser.add_argument(
         "--json",
         type=Path,
         default=None,
-        help="JSON output path. Default: <root>/temporal_metrics_fixedBG_PGD_v0_comparison.json",
+        help="JSON output path. Default: <root>/temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.json",
     )
     return parser.parse_args()
 
@@ -310,8 +312,8 @@ def main() -> None:
     args = parse_args()
     ensure_cv2()
     root = args.root.resolve()
-    csv_path = args.csv or root / "temporal_metrics_fixedBG_PGD_v0_comparison.csv"
-    json_path = args.json or root / "temporal_metrics_fixedBG_PGD_v0_comparison.json"
+    csv_path = args.csv or root / "temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.csv"
+    json_path = args.json or root / "temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.json"
 
     if not root.exists():
         raise FileNotFoundError(f"Root folder does not exist: {root}")
@@ -351,125 +353,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-# import pandas as pd
-
-# # Đọc file kết quả evaluate
-# csv_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/temporal_metrics_v0.csv"
-# df = pd.read_csv(csv_path)
-
-# # Tính trung bình theo từng method
-# avg_df = (
-#     df.groupby("method")
-#     .agg(
-#         num_sequences=("sequence", "count"),
-#         total_frame_count=("frame_count", "sum"),
-#         total_pair_count=("pair_count", "sum"),
-#         avg_warping_error_l1=("warping_error_l1", "mean"),
-#         avg_warping_error_l2=("warping_error_l2", "mean"),
-#         avg_frame_similarity_ssim=("frame_similarity_ssim", "mean"),
-#     )
-#     .reset_index()
-# )
-
-# print(avg_df)
-
-# # Lưu ra file mới
-# avg_df.to_csv("/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/temporal_results_average_by_method.csv", index=False)
-
-
-
-
-# import re
-# from pathlib import Path
-
-
-# def read_metric_txt(txt_path):
-#     txt_path = Path(txt_path)
-
-#     # Try multiple encodings
-#     encodings = ["utf-8", "utf-8-sig", "cp1252", "latin-1"]
-
-#     content = None
-
-#     for enc in encodings:
-#         try:
-#             with open(txt_path, "r", encoding=enc) as f:
-#                 content = f.read()
-#             break
-#         except UnicodeDecodeError:
-#             continue
-
-#     # Final fallback: ignore invalid characters
-#     if content is None:
-#         with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
-#             content = f.read()
-
-#     metrics = {}
-
-#     patterns = {
-#         "Frames": r"Frames:\s*([\d.]+)",
-#         "PSNR": r"PSNR:\s*([\d.]+)",
-#         "SSIM": r"SSIM:\s*([\d.]+)",
-#         "MS-SSIM": r"MS-SSIM:\s*([\d.]+)",
-#         "LPIPS": r"LPIPS:\s*([\d.]+)",
-#         "FID": r"FID:\s*([\d.]+)",
-#         "FVD": r"FVD:\s*([\d.]+)",
-#     }
-
-#     for key, pattern in patterns.items():
-#         match = re.search(pattern, content)
-#         if match:
-#             metrics[key] = float(match.group(1))
-#         else:
-#             metrics[key] = None
-#             print(f"Warning: Cannot find {key} in {txt_path}")
-
-#     return metrics
-
-
-# def average_two_metric_files(txt_path_1, txt_path_2, save_path="average_metrics.txt"):
-#     metrics_1 = read_metric_txt(txt_path_1)
-#     metrics_2 = read_metric_txt(txt_path_2)
-
-#     avg_metrics = {}
-
-#     for key in metrics_1.keys():
-#         if metrics_1[key] is not None and metrics_2[key] is not None:
-#             avg_metrics[key] = (metrics_1[key] + metrics_2[key]) / 2
-#         else:
-#             avg_metrics[key] = None
-
-#     with open(save_path, "w", encoding="utf-8") as f:
-#         f.write(f"Frames:   {avg_metrics['Frames']:.0f}\n")
-#         f.write(f"PSNR:     {avg_metrics['PSNR']:.4f} dB\n")
-#         f.write(f"SSIM:     {avg_metrics['SSIM']:.6f}\n")
-#         f.write(f"MS-SSIM:  {avg_metrics['MS-SSIM']:.6f}\n")
-#         f.write(f"LPIPS:    {avg_metrics['LPIPS']:.6f}\n")
-#         f.write(f"FID:      {avg_metrics['FID']:.4f}\n")
-#         f.write(f"FVD:      {avg_metrics['FVD']:.4f}\n")
-
-#     return avg_metrics
-
-
-# if __name__ == "__main__":
-#     txt_path_1 = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/BasketballPass_sharedNoise_v0.txt"
-#     txt_path_2 = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/party_scene_sharedNoise_v0.txt"
-
-#     avg_metrics = average_two_metric_files(
-#         txt_path_1,
-#         txt_path_2,
-#         save_path="/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/average_metrics_shareNoise_v0.txt"
-#     )
-
-#     print("Average Metrics")
-#     print("----------------")
-#     print(f"Frames:   {avg_metrics['Frames']:.0f}")
-#     print(f"PSNR:     {avg_metrics['PSNR']:.4f} dB")
-#     print(f"SSIM:     {avg_metrics['SSIM']:.6f}")
-#     print(f"MS-SSIM:  {avg_metrics['MS-SSIM']:.6f}")
-#     print(f"LPIPS:    {avg_metrics['LPIPS']:.6f}")
-#     print(f"FID:      {avg_metrics['FID']:.4f}")
-#     print(f"FVD:      {avg_metrics['FVD']:.4f}")

@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Implementation Guide: Temporal Guidance after Shared Noise</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --surface: #ffffff;
+      --text: #18212b;
+      --muted: #596675;
+      --line: #d8dee6;
+      --accent: #087e8b;
+      --accent-soft: #e8f5f6;
+      --warning: #9a5a00;
+      --warning-soft: #fff5df;
+      --danger: #a33a3a;
+      --danger-soft: #fff0f0;
+      --code-bg: #161b22;
+      --code-text: #e6edf3;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+      letter-spacing: 0;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    header .inner,
+    main {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    header .inner {
+      padding: 38px 0 30px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 32px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      gap: 44px;
+      padding: 32px 0 64px;
+    }
+
+    nav {
+      position: sticky;
+      top: 18px;
+      align-self: start;
+      border-left: 3px solid var(--accent);
+      padding-left: 16px;
+    }
+
+    nav strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    nav a {
+      display: block;
+      padding: 4px 0;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    nav a:hover {
+      color: var(--accent);
+    }
+
+    article {
+      min-width: 0;
+    }
+
+    section {
+      padding: 0 0 34px;
+      margin: 0 0 34px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    section:last-child {
+      border-bottom: 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 23px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 25px 0 9px;
+      font-size: 17px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 8px 0 14px;
+    }
+
+    ul,
+    ol {
+      padding-left: 23px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    p code,
+    li code,
+    td code {
+      background: #edf1f5;
+      border: 1px solid #dce2e8;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 12px 0 18px;
+      padding: 17px 19px;
+      border-radius: 6px;
+      background: var(--code-bg);
+      color: var(--code-text);
+      line-height: 1.5;
+      tab-size: 4;
+    }
+
+    pre code {
+      font-size: 13px;
+    }
+
+    .note,
+    .warning,
+    .danger {
+      border-left: 4px solid;
+      padding: 12px 16px;
+      margin: 16px 0;
+      border-radius: 0 5px 5px 0;
+    }
+
+    .note {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .warning {
+      border-color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .danger {
+      border-color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .formula {
+      overflow-x: auto;
+      margin: 14px 0;
+      padding: 14px 18px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      font-family: "Times New Roman", serif;
+      font-size: 19px;
+      text-align: center;
+    }
+
+    .flow {
+      margin: 16px 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 20px;
+      background: var(--surface);
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf3f5;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--accent-soft);
+      color: #075b64;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .path {
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      nav {
+        position: static;
+      }
+
+      h1 {
+        font-size: 27px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="inner">
+      <h1>Temporal Gradient Guidance after Shared Noise</h1>
+      <p class="subtitle">
+        Hướng dẫn triển khai cho BrushNet/DDIM, không thay đổi trực tiếp bất kỳ file Python nào.
+      </p>
+    </div>
+  </header>
+
+  <main>
+    <nav aria-label="Mục lục">
+      <strong>Mục lục</strong>
+      <a href="#scope">1. Phạm vi</a>
+      <a href="#audit">2. Trạng thái code</a>
+      <a href="#math">3. Công thức</a>
+      <a href="#architecture">4. Luồng xử lý</a>
+      <a href="#files">5. File cần thay đổi</a>
+      <a href="#flow">6. Optical flow</a>
+      <a href="#loss">7. Temporal loss</a>
+      <a href="#scheduler">8. DDIM guidance</a>
+      <a href="#test">9. Test theo clip</a>
+      <a href="#memory">10. Bộ nhớ</a>
+      <a href="#validation">11. Kiểm thử</a>
+      <a href="#pitfalls">12. Lỗi dễ gặp</a>
+    </nav>
+
+    <article>
+      <section id="scope">
+        <h2>1. Phạm vi của phiên bản đầu tiên</h2>
+
+        <p><span class="status">Mục tiêu</span></p>
+        <p>
+          Giữ nguyên shared-noise initialization hiện tại, sau đó thêm temporal guidance chỉ trên
+          vùng BG ổn định trong quá trình reverse DDIM sampling.
+        </p>
+
+        <ul>
+          <li>BG/ROI mask có thể thay đổi theo frame.</li>
+          <li>Một object không thay đổi semantic membership giữa ROI và BG.</li>
+          <li>Chỉ những pixel là BG ở cả hai frame sau alignment mới tham gia temporal loss.</li>
+          <li>Optical flow và visibility mask được tính một lần từ degraded input.</li>
+          <li>Không backpropagate qua optical-flow model.</li>
+          <li>Không thay đổi shared noise bằng temporal gradient.</li>
+          <li>Chưa kết hợp PGD residual trong ablation đầu tiên.</li>
+        </ul>
+
+        <div class="note">
+          Shared noise tạo prior chung ở bước khởi tạo. Temporal guidance là ràng buộc bổ sung trong
+          từng denoising step. Hai cơ chế này bổ trợ nhau nhưng không nên gộp thành một biến cập nhật.
+        </div>
+      </section>
+
+      <section id="audit">
+        <h2>2. Trạng thái code hiện tại</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Thành phần</th>
+              <th>Hiện trạng</th>
+              <th>Điều cần làm về sau</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Fixed-BG test</td>
+              <td>Đang generate từng frame trong một vòng lặp.</td>
+              <td>Đổi sang clip batch để mỗi lần sampling nhìn thấy ít nhất hai frame.</td>
+            </tr>
+            <tr>
+              <td>Shared-noise pipeline</td>
+              <td>Đã trộn independent/shared BG noise trước denoising.</td>
+              <td>Giữ nguyên; chỉ reset temporal scheduler state trước denoising loop.</td>
+            </tr>
+            <tr>
+              <td>Vanilla DDIM</td>
+              <td>Không có decoder, flow, mask hoặc temporal loss.</td>
+              <td>Dùng một scheduler temporal riêng để không ảnh hưởng các baseline.</td>
+            </tr>
+            <tr>
+              <td>CGE scheduler</td>
+              <td>Đã có cơ chế decode predicted x0 và cộng gradient vào prev_sample.</td>
+              <td>Tái sử dụng ý tưởng decode, nhưng temporal gradient nên sửa predicted x0 trước DDIM update.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="danger">
+          File test fixed-BG hiện tại xử lý mỗi lần một frame. Nếu giữ cách này thì tensor trong
+          <code>cond_fn</code> có batch size 1 và không tồn tại cặp frame để tính temporal loss.
+          Chỉ đặt thêm flow vào scheduler sẽ không làm temporal guidance hoạt động.
+        </div>
+      </section>
+
+      <section id="math">
+        <h2>3. Công thức sử dụng</h2>
+
+        <h3>3.1 Backward warping</h3>
+        <p>
+          Với <code>grid_sample</code>, nên dùng backward flow
+          <strong>current-to-previous</strong>, ký hiệu F<sub>i→i-1</sub>.
+        </p>
+
+        <div class="formula">
+          W(X<sub>i-1</sub>, F<sub>i→i-1</sub>)(p)
+          = X<sub>i-1</sub>(p + F<sub>i→i-1</sub>(p))
+        </div>
+
+        <h3>3.2 Stable-BG mask</h3>
+        <div class="formula">
+          S<sub>i</sub><sup>BG</sup>
+          = B<sub>i</sub>
+          ⊙ W(B<sub>i-1</sub>, F<sub>i→i-1</sub>)
+          ⊙ V<sub>i</sub>
+        </div>
+
+        <ul>
+          <li>B<sub>i</sub> = 1 tại BG hiện tại, 0 tại ROI.</li>
+          <li>W(B<sub>i-1</sub>, F) là previous BG mask đã được align về frame hiện tại.</li>
+          <li>V<sub>i</sub> = 1 ở vùng không occlusion, trong biên và flow đáng tin cậy.</li>
+          <li>S<sub>i</sub><sup>BG</sup> chỉ giữ vùng BG có correspondence hợp lệ.</li>
+        </ul>
+
+        <h3>3.3 Robust temporal loss</h3>
+        <div class="formula">
+          L<sub>BG-temp</sub><sup>(t)</sup>
+          = Σ<sub>i=2</sub><sup>N</sup>
+          [Σ<sub>p,c</sub> S<sub>i</sub><sup>BG</sup>(p)
+          ρ(x̂<sub>0,t</sub><sup>i</sup>(p,c)
+          - W(x̂<sub>0,t</sub><sup>i-1</sup>, F<sub>i→i-1</sub>)(p,c))]
+          / [3Σ<sub>p</sub>S<sub>i</sub><sup>BG</sup>(p) + ε]
+        </div>
+
+        <p>Charbonnier penalty được dùng thay cho absolute value cứng:</p>
+        <div class="formula">
+          ρ(d) = √(d² + ε<sub>char</sub>²)
+        </div>
+
+        <h3>3.4 Gradient guidance</h3>
+        <div class="formula">
+          g<sub>t</sub> = ∇<sub>ẑ0,t</sub>
+          L<sub>BG-temp</sub>(D(ẑ<sub>0,t</sub>))
+        </div>
+        <div class="formula">
+          z̃<sub>0,t</sub>
+          = ẑ<sub>0,t</sub> - η<sub>t</sub> normalize(g<sub>t</sub>)
+        </div>
+
+        <p>
+          DDIM sau đó dùng z̃<sub>0,t</sub> thay cho ẑ<sub>0,t</sub> để tính z<sub>t-1</sub>.
+          Temporal loss differentiable nên không cần finite-difference CGE.
+        </p>
+      </section>
+
+      <section id="architecture">
+        <h2>4. Luồng xử lý đề xuất</h2>
+
+        <div class="flow">Degraded clip [N, 3, H, W]
+        |
+        +----> RAFT / SEA-RAFT (chạy một lần, no_grad)
+        |           |
+        |           +----> forward flow
+        |           +----> backward flow
+        |           +----> visibility/confidence mask
+        |
+        +----> ROI masks ----> BG masks ----> stable-BG pair masks
+        |
+        +----> BrushNet shared-noise initialization
+                        |
+                        v
+                 DDIM denoising step t
+                        |
+                        v
+                 predicted clean latent z0
+                        |
+                        v
+                 VAE decode predicted x0
+                        |
+                        v
+                 stable-BG temporal loss
+                        |
+                        v
+                 gradient with respect to z0
+                        |
+                        v
+                 guided z0 ----> DDIM z(t-1)</div>
+      </section>
+
+      <section id="files">
+        <h2>5. Các file nên thay đổi khi bắt đầu implement</h2>
+
+        <p>
+          Để bảo vệ các baseline đang chạy, nên tạo case riêng thay vì sửa trực tiếp fixed-BG hoặc
+          CGE hiện tại.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>File đề xuất</th>
+              <th>Vai trò</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="path"><code>diffusers/schedulers/scheduling_ddim_temporal.py</code></td>
+              <td>Backward warp, temporal loss và predicted-x0 guidance.</td>
+            </tr>
+            <tr>
+              <td class="path"><code>test_..._fixedBG_temporal_v0.py</code></td>
+              <td>Load flow model, chia clip, chuẩn bị flow/mask và chạy ablation.</td>
+            </tr>
+            <tr>
+              <td class="path"><code>pipeline_brushnet_sharedNoise_sameBG_v0_0.py</code></td>
+              <td>
+                Chỉ cần reset <code>temporal_step_count</code> trước denoising nếu scheduler không tự reset.
+                Không thay công thức shared-noise initialization.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="warning">
+          Đây là danh sách hướng dẫn. Tài liệu này không tạo các file Python trên và không thay đổi
+          code hiện tại.
+        </div>
+      </section>
+
+      <section id="flow">
+        <h2>6. Precompute optical flow và visibility</h2>
+
+        <h3>6.1 Load RAFT một lần</h3>
+        <pre><code>from torchvision.models.optical_flow import (
+    raft_large,
+    Raft_Large_Weights,
+)
+
+flow_weights = Raft_Large_Weights.DEFAULT
+flow_transform = flow_weights.transforms()
+flow_model = raft_large(
+    weights=flow_weights,
+    progress=False,
+).to(device).eval()
+
+for parameter in flow_model.parameters():
+    parameter.requires_grad_(False)</code></pre>
+
+        <h3>6.2 Tính cả hai hướng cho clip</h3>
+        <p>
+          <code>frames</code> phải là full degraded RGB frames, không phải ảnh đã tách FG/BG.
+          Shape: <code>[N, 3, H, W]</code>, range <code>[0, 1]</code>.
+        </p>
+
+        <pre><code>@torch.no_grad()
+def estimate_bidirectional_flow(frames, flow_model, flow_transform):
+    previous = frames[:-1]
+    current = frames[1:]
+
+    previous_input, current_input = flow_transform(previous, current)
+
+    flow_forward = flow_model(
+        previous_input,
+        current_input,
+    )[-1]  # previous -> current
+
+    flow_backward = flow_model(
+        current_input,
+        previous_input,
+    )[-1]  # current -> previous
+
+    return flow_forward, flow_backward</code></pre>
+
+        <div class="note">
+          Tensor dùng cho <code>grid_sample(previous, flow)</code> là
+          <code>flow_backward</code>. Forward flow chủ yếu dùng để kiểm tra cycle consistency.
+        </div>
+
+        <h3>6.3 Backward warp helper</h3>
+        <pre><code>def backward_warp(source, flow):
+    batch, _, height, width = source.shape
+
+    y, x = torch.meshgrid(
+        torch.arange(height, device=source.device),
+        torch.arange(width, device=source.device),
+        indexing="ij",
+    )
+
+    sample_x = x.float()[None] + flow[:, 0]
+    sample_y = y.float()[None] + flow[:, 1]
+
+    in_bounds = (
+        (sample_x >= 0)
+        &amp; (sample_x &lt;= width - 1)
+        &amp; (sample_y >= 0)
+        &amp; (sample_y &lt;= height - 1)
+    ).unsqueeze(1)
+
+    grid_x = 2.0 * sample_x / max(width - 1, 1) - 1.0
+    grid_y = 2.0 * sample_y / max(height - 1, 1) - 1.0
+    grid = torch.stack([grid_x, grid_y], dim=-1)
+
+    warped = torch.nn.functional.grid_sample(
+        source,
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    )
+
+    return warped, in_bounds.to(source.dtype)</code></pre>
+
+        <h3>6.4 Forward-backward visibility mask</h3>
+        <pre><code>def forward_backward_visibility(
+    flow_forward,
+    flow_backward,
+    alpha=0.01,
+    beta=0.5,
+):
+    # Sample previous->current flow at the previous coordinate
+    # corresponding to each current-frame pixel.
+    warped_forward, in_bounds = backward_warp(
+        flow_forward,
+        flow_backward,
+    )
+
+    cycle = flow_backward + warped_forward
+    cycle_error = cycle.square().sum(dim=1, keepdim=True)
+
+    flow_magnitude = (
+        flow_backward.square().sum(dim=1, keepdim=True)
+        + warped_forward.square().sum(dim=1, keepdim=True)
+    )
+
+    consistent = cycle_error &lt;= alpha * flow_magnitude + beta
+    return consistent.to(flow_backward.dtype) * in_bounds</code></pre>
+
+        <h3>6.5 Stable-BG mask</h3>
+        <p>
+          Nếu mask input là ROI=1, phải đổi thành <code>bg_masks = 1 - roi_masks</code>.
+        </p>
+
+        <pre><code>warped_previous_bg, bg_in_bounds = backward_warp(
+    bg_masks[:-1],
+    flow_backward,
+)
+
+# Có thể giữ soft mask hoặc threshold để tránh boundary interpolation.
+warped_previous_bg = (
+    warped_previous_bg > 0.5
+).to(bg_masks.dtype)
+
+stable_bg = (
+    bg_masks[1:]
+    * warped_previous_bg
+    * visibility
+    * bg_in_bounds
+)</code></pre>
+      </section>
+
+      <section id="loss">
+        <h2>7. Hàm temporal loss</h2>
+
+        <pre><code>def bg_temporal_loss(
+    predicted_images,
+    flow_backward,
+    stable_bg,
+    charbonnier_eps=1e-3,
+):
+    # predicted_images: [N, 3, H, W]
+    # flow_backward:    [N-1, 2, H, W]
+    # stable_bg:        [N-1, 1, H, W]
+
+    warped_previous, in_bounds = backward_warp(
+        predicted_images[:-1],
+        flow_backward,
+    )
+
+    pair_mask = stable_bg * in_bounds
+    difference = predicted_images[1:] - warped_previous
+
+    robust_error = torch.sqrt(
+        difference.float().square() + charbonnier_eps**2
+    )
+
+    numerator = (robust_error * pair_mask.float()).sum()
+    denominator = (
+        pair_mask.float().sum() * predicted_images.shape[1]
+    ).clamp_min(1.0)
+
+    return numerator / denominator</code></pre>
+
+        <h3>Joint hay causal gradient?</h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Kiểu</th>
+              <th>Code</th>
+              <th>Đặc điểm</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Joint clip</td>
+              <td><code>predicted_images[:-1]</code></td>
+              <td>Gradient đi vào cả previous và current frame; đối xứng nhưng tốn memory hơn.</td>
+            </tr>
+            <tr>
+              <td>Causal</td>
+              <td><code>predicted_images[:-1].detach()</code></td>
+              <td>Chỉ current frame thay đổi; dễ kiểm soát nhưng có thể tích lũy drift.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Thí nghiệm đầu tiên nên dùng joint clip vì shared noise cũng đang được áp dụng đồng thời
+          cho clip. Nếu OOM, chuyển sang causal pair guidance.
+        </p>
+      </section>
+
+      <section id="scheduler">
+        <h2>8. Thêm guidance vào DDIM scheduler</h2>
+
+        <h3>8.1 Scheduler state cần có</h3>
+        <pre><code>scheduler.temporal_guidance_enabled = True
+scheduler.temporal_guidance_scale = 1e-3
+scheduler.temporal_start_step = 15
+scheduler.temporal_end_step = 40
+scheduler.temporal_every_n_steps = 1
+scheduler.temporal_step_count = 0
+
+scheduler.decoder = pipe.vae.decode
+scheduler.vae_scaling_factor = pipe.vae.config.scaling_factor
+scheduler.decode_chunk_size = 1
+
+scheduler.temporal_flow_backward = flow_backward
+scheduler.temporal_stable_bg = stable_bg
+scheduler.temporal_bg_masks = bg_masks</code></pre>
+
+        <h3>8.2 Vị trí chính xác trong <code>step()</code></h3>
+        <p>
+          Temporal block nên chạy sau khi DDIM tính và clip
+          <code>pred_original_sample</code>, nhưng trước:
+        </p>
+
+        <pre><code>pred_sample_direction = ...
+prev_sample = sqrt(alpha_prev) * pred_original_sample + ...</code></pre>
+
+        <p>
+          Không nên đợi đến sau khi có <code>prev_sample</code> rồi cộng temporal gradient trực tiếp,
+          vì gradient được tính đối với predicted clean latent, không phải đối với noisy
+          <code>prev_sample</code>.
+        </p>
+
+        <h3>8.3 Predicted-x0 temporal guidance block</h3>
+        <pre><code>should_run_temporal = (
+    getattr(self, "temporal_guidance_enabled", False)
+    and pred_original_sample.shape[0] > 1
+    and self.temporal_start_step
+        &lt;= self.temporal_step_count
+        &lt; self.temporal_end_step
+    and self.temporal_step_count
+        % self.temporal_every_n_steps == 0
+)
+
+if should_run_temporal:
+    with torch.enable_grad():
+        z0 = pred_original_sample.detach().requires_grad_(True)
+
+        decoded_chunks = []
+        for start in range(0, z0.shape[0], self.decode_chunk_size):
+            z0_chunk = z0[start:start + self.decode_chunk_size]
+            decoded_chunks.append(
+                self.decoder(
+                    z0_chunk / self.vae_scaling_factor
+                ).sample
+            )
+
+        predicted_images = torch.cat(decoded_chunks, dim=0)
+
+        temporal_loss = bg_temporal_loss(
+            predicted_images=predicted_images,
+            flow_backward=self.temporal_flow_backward,
+            stable_bg=self.temporal_stable_bg,
+        )
+
+        temporal_grad = torch.autograd.grad(
+            temporal_loss,
+            z0,
+            retain_graph=False,
+        )[0]
+
+    # Spatially restrict the latent update to BG.
+    bg_mask_latent = torch.nn.functional.interpolate(
+        self.temporal_bg_masks.to(
+            device=z0.device,
+            dtype=z0.dtype,
+        ),
+        size=z0.shape[-2:],
+        mode="nearest",
+    )
+    temporal_grad = temporal_grad * bg_mask_latent
+
+    # Per-frame normalization.
+    grad_norm = torch.linalg.vector_norm(
+        temporal_grad.float().reshape(temporal_grad.shape[0], -1),
+        ord=2,
+        dim=1,
+    ).clamp_min(1e-8)
+
+    normalized_grad = temporal_grad / grad_norm.view(-1, 1, 1, 1)
+
+    pred_original_sample = (
+        pred_original_sample
+        - self.temporal_guidance_scale * normalized_grad
+    )
+
+    self.last_temporal_loss = float(
+        temporal_loss.detach().cpu()
+    )
+    self.last_temporal_grad_norm = float(
+        grad_norm.mean().detach().cpu()
+    )
+
+self.temporal_step_count += 1</code></pre>
+
+        <div class="warning">
+          Pipeline hiện được trang trí bởi inference/no-grad context. Block trên bắt buộc phải có
+          <code>torch.enable_grad()</code> và <code>z0.requires_grad_(True)</code>. VAE parameters có
+          thể đặt <code>requires_grad_(False)</code>; gradient theo input latent vẫn hoạt động.
+        </div>
+
+        <h3>8.4 Không double guidance</h3>
+        <p>
+          Nếu dùng predicted-x0 temporal guidance, không được tiếp tục cộng cùng temporal gradient
+          bằng <code>prev_sample = prev_sample + grad</code>. Một temporal gradient chỉ được áp dụng
+          một lần.
+        </p>
+      </section>
+
+      <section id="test">
+        <h2>9. Thay đổi test từ per-frame sang clip</h2>
+
+        <h3>9.1 Chia video thành clip</h3>
+        <pre><code>clip_size = 4  # Bắt đầu nhỏ để kiểm tra đúng trước.
+
+clips = [
+    indexed_all[start:start + clip_size]
+    for start in range(0, len(indexed_all), clip_size)
+]</code></pre>
+
+        <h3>9.2 Chuẩn bị list và tensor batch</h3>
+        <p>Mỗi clip cần đồng thời tạo:</p>
+        <ul>
+          <li><code>fg_list</code>, <code>bg_list</code>, <code>init_list</code>.</li>
+          <li><code>mask_list</code>, <code>prompt_list</code>.</li>
+          <li><code>degraded_frames</code>: tensor full RGB [N,3,H,W], range [0,1].</li>
+          <li><code>roi_masks</code>: [N,1,H,W], ROI=1.</li>
+          <li><code>bg_masks = 1 - roi_masks</code>.</li>
+        </ul>
+
+        <h3>9.3 Precompute temporal tensors trước sampling</h3>
+        <pre><code>flow_forward, flow_backward = estimate_bidirectional_flow(
+    degraded_frames,
+    flow_model,
+    flow_transform,
+)
+
+visibility = forward_backward_visibility(
+    flow_forward,
+    flow_backward,
+)
+
+warped_previous_bg, bg_in_bounds = backward_warp(
+    bg_masks[:-1],
+    flow_backward,
+)
+
+stable_bg = (
+    bg_masks[1:]
+    * (warped_previous_bg > 0.5).to(bg_masks.dtype)
+    * visibility
+    * bg_in_bounds
+)</code></pre>
+
+        <h3>9.4 Gán state vào scheduler</h3>
+        <pre><code>pipe.scheduler.temporal_step_count = 0
+pipe.scheduler.temporal_flow_backward = flow_backward.to(
+    device=device,
+    dtype=torch.float32,
+)
+pipe.scheduler.temporal_stable_bg = stable_bg.to(
+    device=device,
+    dtype=torch.float32,
+)
+pipe.scheduler.temporal_bg_masks = bg_masks.to(
+    device=device,
+    dtype=pipe.dtype,
+)</code></pre>
+
+        <h3>9.5 Shared-noise sampling vẫn giữ nguyên</h3>
+        <pre><code>main_generator = torch.Generator(device).manual_seed(main_seed)
+shared_generator = torch.Generator(device).manual_seed(shared_seed)
+
+# main_seed và shared_seed phải khác nhau.
+shared_bg_noise = torch.randn(
+    (1, latent_channels, latent_height, latent_width),
+    generator=shared_generator,
+    device=device,
+    dtype=pipe.dtype,
+)
+
+result = ip_model.generate_fgbg(
+    fg_pil_image=fg_list,
+    bg_pil_image=bg_list,
+    prompt=prompt_list,
+    image=init_list,
+    mask_image=mask_list,
+    num_samples=1,
+    num_inference_steps=50,
+    generator=main_generator,
+    use_shared_bg_noise=True,
+    shared_bg_noise=shared_bg_noise,
+    shared_bg_noise_strength=shared_strength,
+    variance_preserving_shared_noise=True,
+)</code></pre>
+
+        <div class="danger">
+          Không dùng cùng seed cho <code>main_generator</code> và
+          <code>shared_generator</code>. Với variance-preserving mixing và strength nhỏ hơn 1,
+          frame đầu sẽ vi phạm giả thiết independent noise và có thể bị khuếch đại phương sai.
+        </div>
+      </section>
+
+      <section id="memory">
+        <h2>10. Kiểm soát VRAM và thời gian</h2>
+
+        <ol>
+          <li>Bắt đầu bằng <code>clip_size=4</code>, không phải 8 hoặc 32.</li>
+          <li>Dùng <code>decode_chunk_size=1</code> để VAE decode từng frame nhưng vẫn giữ graph.</li>
+          <li>Flow chạy trước sampling và tensor output được detach.</li>
+          <li>RAFT có thể chuyển về CPU sau khi precompute flow nếu thiếu VRAM.</li>
+          <li>Chỉ chạy temporal guidance trong một window, ví dụ step [15,40).</li>
+          <li>Có thể dùng <code>temporal_every_n_steps=2</code> để giảm một nửa số lần VAE decode.</li>
+          <li>Không bật CGE/VVC trong ablation temporal đầu tiên.</li>
+        </ol>
+
+        <div class="note">
+          Decode theo chunk giảm activation peak, nhưng temporal loss vẫn được tính trên tensor ảnh
+          đã concatenate nên gradient giữa các frame vẫn tồn tại.
+        </div>
+      </section>
+
+      <section id="validation">
+        <h2>11. Kế hoạch kiểm thử</h2>
+
+        <h3>11.1 Thông số khởi đầu</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Tham số</th>
+              <th>Giá trị ban đầu</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Clip size</td><td>4</td></tr>
+            <tr><td>DDIM steps</td><td>50</td></tr>
+            <tr><td>Temporal window</td><td>[15, 40)</td></tr>
+            <tr><td>Temporal frequency</td><td>Mỗi 1 hoặc 2 step</td></tr>
+            <tr><td>Charbonnier epsilon</td><td>1e-3</td></tr>
+            <tr><td>Normalized guidance scale sweep</td><td>1e-4, 3e-4, 1e-3, 3e-3</td></tr>
+            <tr><td>Shared strength</td><td>Giữ cố định khi sweep temporal scale</td></tr>
+          </tbody>
+        </table>
+
+        <h3>11.2 Ablation bắt buộc</h3>
+        <ol>
+          <li>Independent noise, không temporal guidance.</li>
+          <li>Shared noise, không temporal guidance.</li>
+          <li>Shared noise + temporal guidance, không visibility mask.</li>
+          <li>Shared noise + temporal guidance + visibility mask.</li>
+        </ol>
+
+        <h3>11.3 Log trong mỗi denoising step</h3>
+        <pre><code>{
+    "step": temporal_step_count,
+    "timestep": int(timestep),
+    "temporal_loss": last_temporal_loss,
+    "mean_grad_norm": last_temporal_grad_norm,
+    "stable_bg_ratio": float(stable_bg.mean()),
+    "guidance_scale": temporal_guidance_scale,
+}</code></pre>
+
+        <p>Nên lưu predicted-x0 preview tại step 0, 10, 20, 30, 40 và 49.</p>
+
+        <h3>11.4 Tiêu chí đánh giá</h3>
+        <ul>
+          <li>BG warping error giảm so với shared-noise-only.</li>
+          <li>tLPIPS hoặc temporal LPIPS giảm.</li>
+          <li>Restoration PSNR/SSIM/LPIPS không giảm đáng kể.</li>
+          <li>Không xuất hiện ghosting tại ROI boundary.</li>
+          <li>Stable-BG ratio không quá nhỏ; nếu gần 0 thì flow/mask convention đang sai.</li>
+        </ul>
+      </section>
+
+      <section id="pitfalls">
+        <h2>12. Checklist lỗi dễ gặp</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Hiện tượng</th>
+              <th>Nguyên nhân cần kiểm tra</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Temporal loss luôn bằng 0</td>
+              <td>Batch size 1, stable-BG mask rỗng, hoặc ROI/BG convention bị đảo.</td>
+            </tr>
+            <tr>
+              <td>Ảnh bị ghosting</td>
+              <td>Dùng forward flow với grid_sample, bỏ visibility mask, hoặc guidance quá mạnh.</td>
+            </tr>
+            <tr>
+              <td>ROI bị giảm chất lượng</td>
+              <td>Không mask latent gradient, BG mask sai, hoặc boundary mask quá rộng.</td>
+            </tr>
+            <tr>
+              <td>Ảnh bị blur đồng đều</td>
+              <td>Temporal-only objective quá mạnh; cần giảm scale hoặc tăng restoration constraint.</td>
+            </tr>
+            <tr>
+              <td>OOM</td>
+              <td>Clip quá lớn, decode toàn batch, CGE và temporal cùng giữ graph.</td>
+            </tr>
+            <tr>
+              <td>Flow đúng hình nhưng warp sai</td>
+              <td>Nhầm hướng current→previous với previous→current hoặc sai scale flow sau resize.</td>
+            </tr>
+            <tr>
+              <td>Predicted images có range bất thường</td>
+              <td>Quên chia latent cho <code>vae.config.scaling_factor</code> trước decode.</td>
+            </tr>
+            <tr>
+              <td>Frame đầu noisy khi strength &lt; 1</td>
+              <td>Main noise và shared noise được tạo từ cùng seed.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Kết luận triển khai</h3>
+        <ol>
+          <li>Giữ nguyên shared-noise initialization đã sửa seed.</li>
+          <li>Đổi inference unit từ một frame sang một clip nhỏ.</li>
+          <li>Precompute bidirectional flow và stable-BG masks.</li>
+          <li>Decode predicted x0 trong temporal window.</li>
+          <li>Tính differentiable stable-BG temporal loss.</li>
+          <li>Cập nhật predicted x0 đúng một lần trước DDIM prev-sample equation.</li>
+          <li>Kiểm tra shared-only và shared+temporal trước khi thêm CGE hoặc PGD.</li>
+        </ol>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

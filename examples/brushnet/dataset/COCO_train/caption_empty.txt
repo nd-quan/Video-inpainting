@@ -1,0 +1,1 @@
+# Placeholder only. V8 null-text training ignores per-image captions and always uses an empty prompt embedding.

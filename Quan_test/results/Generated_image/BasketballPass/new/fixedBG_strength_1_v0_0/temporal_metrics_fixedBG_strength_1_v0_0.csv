@@ -1,0 +1,2 @@
+sequence,method,frame_count,pair_count,warping_error_l1,warping_error_l2,frame_similarity_ssim
+.,fixedBG_strength_1_v0_0,150,149,0.021632712865685858,0.0012655885530332566,0.7773884065465905

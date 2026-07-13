@@ -1,0 +1,2 @@
+sequence,method,frame_count,pair_count,warping_error_l1,warping_error_l2,frame_similarity_ssim
+.,fixedBG_nulltext_checkpoint3500_noSharedNoise,150,149,0.05551949158410898,0.007816072615901096,0.5258767264801384

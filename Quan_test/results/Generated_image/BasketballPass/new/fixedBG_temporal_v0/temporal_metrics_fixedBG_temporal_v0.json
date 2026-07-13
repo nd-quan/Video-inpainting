@@ -1,0 +1,23 @@
+{
+  "per_sequence": [
+    {
+      "sequence": ".",
+      "method": "fixedBG_temporal_v0",
+      "frame_count": 150,
+      "pair_count": 149,
+      "warping_error_l1": 0.02288555757036345,
+      "warping_error_l2": 0.0014230344149959117,
+      "frame_similarity_ssim": 0.7545893899012999
+    }
+  ],
+  "aggregate_by_method": {
+    "fixedBG_temporal_v0": {
+      "sequence_count": 1.0,
+      "frame_count": 150.0,
+      "pair_count": 149.0,
+      "warping_error_l1": 0.02288555757036345,
+      "warping_error_l2": 0.0014230344149959117,
+      "frame_similarity_ssim": 0.7545893899012999
+    }
+  }
+}
