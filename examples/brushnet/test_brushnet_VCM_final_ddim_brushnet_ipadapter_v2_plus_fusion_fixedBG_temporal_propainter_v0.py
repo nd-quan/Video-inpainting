@@ -6,6 +6,7 @@
 # v3는 v2가 잘 나와서 구현 안함
 
 import os
+import sys
 from glob import glob
 from tqdm import tqdm
 
@@ -20,6 +21,7 @@ from diffusers.schedulers.scheduling_ddim_temporal import (
 )
 
 import torch
+import torch.nn.functional as F
 import cv2
 import numpy as np
 from PIL import Image
@@ -27,6 +29,17 @@ from torchvision import transforms
 from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 from ip_adapter import FusionIPAdapter
+
+PROPAINTER_ROOT = "/media/ssd1/ndquan/videoInpainting/code/pretrained/ProPainter"
+PROPAINTER_FLOW_CKPT = os.path.join(
+    PROPAINTER_ROOT,
+    "weights",
+    "recurrent_flow_completion.pth",
+)
+if PROPAINTER_ROOT not in sys.path:
+    sys.path.insert(0, PROPAINTER_ROOT)
+
+from model.recurrent_flow_completion import RecurrentFlowCompleteNet
 
 ##################### 디퓨전 값 고정하기 위해서
 import random
@@ -54,7 +67,7 @@ device = "cuda"
 # image_dir='/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/Traffic/inputs'
 image_dir = os.environ.get(
     "IMAGE_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/inputs",
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/ParkScene/inputs",
 )
 
 
@@ -65,7 +78,7 @@ image_dir = os.environ.get(
 # mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/masks' # open
 mask_dir = os.environ.get(
     "MASK_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/masks",
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/ParkScene/masks",
 )
 
 # output_dir = "/media/hdd/naeun/save/BrushNet_200000"
@@ -73,18 +86,13 @@ mask_dir = os.environ.get(
 # output_dir='/media/hdd/naeun/save/Opendataset/BrushNet_300000'
 output_dir = os.environ.get(
     "OUTPUT_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_image/PartyScene/finetuning_ckpt3500/sharedNoise_fixedBG_1_temporal_v0_L2",
-)
-# test 15는 14에서 그냥 copy&paste
-# test 16은 blending을 반대로 
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_image/ParkScene/finetuning_ckpt3500/sharedNoise_fixedBG_1_temporal_propainter_v0_L2")
+
 if not os.path.exists(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
 # base_model_path = "lambdalabs/miniSD-diffusers"
-base_model_path = os.environ.get(
-    "BASE_MODEL_PATH",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5",
-)
+base_model_path="stable-diffusion-v1-5/stable-diffusion-v1-5" #512
 # brushnet_path = "/media/hdd/naeun/save/checkpoint/Checkpoint_brushNet_200000"
 # brushnet_path="/media/ssd2/naeun/ws04/BrushNet_previous/examples/brushnet/pretrained_brushnet/brushnet"
 # brushnet_path="/media/ssd2/naeun/NAS_NE/checkpoint/Checkpoint_brushnet_512/checkpoint-600000/brushnet"
@@ -93,10 +101,7 @@ base_model_path = os.environ.get(
 
 # brushnet_path="/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
 
-checkpoint_dir = os.environ.get(
-    "CHECKPOINT_DIR",
-    "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500",
-)
+checkpoint_dir = "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500"
 
 brushnet_path = f"{checkpoint_dir}/brushnet"
 
@@ -127,8 +132,22 @@ temporal_detach_previous = (
 )
 flow_batch_size = int(os.environ.get("TEMPORAL_FLOW_BATCH_SIZE", "2"))
 force_regenerate = os.environ.get("FORCE_REGENERATE", "1").lower() in {"1", "true", "yes", "on"}
+use_propainter_flow_completion = (
+    os.environ.get("USE_PROPAINTER_FLOW_COMPLETION", "1").lower()
+    in {"1", "true", "yes", "on"}
+)
+propainter_mask_mode = os.environ.get("PROPAINTER_FLOW_MASK_MODE", "unreliable_bg").lower()
+propainter_dilation_size = int(os.environ.get("PROPAINTER_DILATION_SIZE", "9"))
+max_test_clips = int(os.environ.get("MAX_TEST_CLIPS", "1"))
 
 brushnet_conditioning_scale = 1.0
+
+valid_propainter_modes = {
+    "unreliable_bg",
+    "bg",
+    "roi",
+    "dilated_roi",
+}
 
 if clip_size < 2:
     raise ValueError("TEMPORAL_CLIP_SIZE must be at least 2.")
@@ -136,19 +155,14 @@ if main_noise_seed == shared_noise_seed:
     raise ValueError("MAIN_NOISE_SEED and SHARED_NOISE_SEED must be different.")
 if not 0.0 <= shared_bg_noise_strength <= 1.0:
     raise ValueError("SHARED_BG_NOISE_STRENGTH must be in [0, 1].")
-if temporal_every_n_steps <= 0:
-    raise ValueError("TEMPORAL_EVERY_N_STEPS must be positive.")
-if flow_batch_size <= 0:
-    raise ValueError("TEMPORAL_FLOW_BATCH_SIZE must be positive.")
-for input_dir_name, input_dir_path in (("IMAGE_DIR", image_dir), ("MASK_DIR", mask_dir)):
-    if not os.path.isdir(input_dir_path):
-        raise FileNotFoundError(f"{input_dir_name} does not exist: {input_dir_path}")
-for model_dir_name, model_dir_path in (
-    ("BASE_MODEL_PATH", base_model_path),
-    ("CHECKPOINT_DIR", checkpoint_dir),
-):
-    if not os.path.isdir(model_dir_path):
-        raise FileNotFoundError(f"{model_dir_name} does not exist: {model_dir_path}")
+
+
+if propainter_mask_mode not in valid_propainter_modes:
+    raise ValueError(f"PROPAINTER_FLOW_MASK_MODE must be one of {valid_propainter_modes}.")
+if propainter_dilation_size <= 0 or propainter_dilation_size % 2 == 0:
+    raise ValueError("PROPAINTER_DILATION_SIZE must be a positive odd integer.")
+if max_test_clips < 0:
+    raise ValueError("MAX_TEST_CLIPS must be non-negative; use 0 to run all clips.")
 
 # 모델 로드
 brushnet = BrushNetModel.from_pretrained(brushnet_path, torch_dtype=torch.float16)
@@ -195,20 +209,23 @@ flow_model = raft_large(weights=flow_weights, progress=True).eval()
 for parameter in flow_model.parameters():
     parameter.requires_grad_(False)
 
+# Keep the flow-completion model on CPU between clips. RAFT is also offloaded
+# before this model is moved to GPU, so both models do not occupy VRAM together.
+propainter_flow_complete = None
+if use_propainter_flow_completion:
+    if not os.path.isfile(PROPAINTER_FLOW_CKPT):
+        raise FileNotFoundError(
+            f"Missing ProPainter flow-completion checkpoint: {PROPAINTER_FLOW_CKPT}"
+        )
+    propainter_flow_complete = RecurrentFlowCompleteNet(PROPAINTER_FLOW_CKPT).eval()
+    for parameter in propainter_flow_complete.parameters():
+        parameter.requires_grad_(False)
+
 # 이미지 & 마스크 경로
 image_paths = sorted(glob(os.path.join(image_dir, "*.png")))
 mask_paths = sorted(glob(os.path.join(mask_dir, "*.png")))
 
-if not image_paths:
-    raise FileNotFoundError(f"No PNG input frames found in: {image_dir}")
-if len(mask_paths) != len(image_paths):
-    raise ValueError(
-        f"Image/mask count mismatch: {len(image_paths)} images vs {len(mask_paths)} masks."
-    )
-image_basenames = [os.path.basename(path) for path in image_paths]
-mask_basenames = [os.path.basename(path) for path in mask_paths]
-if image_basenames != mask_basenames:
-    raise ValueError("Input frame and mask filenames must match exactly.")
+assert len(mask_paths) == len(image_paths), "이미지 수와 마스크 수가 일치하지 않습니다."
 
 
 existing_basenames = {os.path.basename(p) for p in glob(os.path.join(output_dir, "*.png"))}
@@ -322,12 +339,155 @@ def forward_backward_visibility(
 
 
 @torch.no_grad()
-def prepare_temporal_conditions(flow_frames, roi_masks):
-    """Create backward flow, visibility, BG masks, and stable-BG masks."""
-    flow_forward, flow_backward = estimate_bidirectional_flow(flow_frames)
-    visibility = forward_backward_visibility(flow_forward, flow_backward)
+def complete_flow_with_propainter(flow_forward, flow_backward, flow_masks):
+    """Complete masked bidirectional flow with the pretrained ProPainter model."""
+    if propainter_flow_complete is None:
+        raise RuntimeError("ProPainter flow completion is enabled but its model is not loaded.")
+    if flow_forward.ndim != 4 or flow_forward.shape[1] != 2:
+        raise ValueError(
+            f"flow_forward must have shape [T-1, 2, H, W], got {tuple(flow_forward.shape)}."
+        )
+    if flow_backward.shape != flow_forward.shape:
+        raise ValueError(
+            "Forward and backward flow shapes must match, "
+            f"got {tuple(flow_forward.shape)} and {tuple(flow_backward.shape)}."
+        )
+    if flow_masks.ndim != 4 or flow_masks.shape[1] != 1:
+        raise ValueError(
+            f"flow_masks must have shape [T, 1, H, W], got {tuple(flow_masks.shape)}."
+        )
+    if flow_masks.shape[0] != flow_forward.shape[0] + 1:
+        raise ValueError(
+            "Flow-completion masks must contain one mask per frame, "
+            f"got {flow_masks.shape[0]} masks and {flow_forward.shape[0]} flow pairs."
+        )
 
-    bg_masks = (1.0 - roi_masks).to(device=device, dtype=torch.float32)
+    model = propainter_flow_complete.to(device=device, dtype=torch.float32)
+    flow_forward = flow_forward.to(device=device, dtype=torch.float32)
+    flow_backward = flow_backward.to(device=device, dtype=torch.float32)
+    flow_masks = flow_masks.to(device=device, dtype=torch.float32)
+
+    if flow_masks.shape[-2:] != flow_forward.shape[-2:]:
+        flow_masks = F.interpolate(
+            flow_masks,
+            size=flow_forward.shape[-2:],
+            mode="nearest",
+        )
+
+    flows_bi = (
+        flow_forward.unsqueeze(0),
+        flow_backward.unsqueeze(0),
+    )
+    masks = flow_masks.unsqueeze(0)
+
+    try:
+        predicted_flows_bi, _ = model.forward_bidirect_flow(flows_bi, masks)
+        completed_flows_bi = model.combine_flow(flows_bi, predicted_flows_bi, masks)
+        completed_forward = completed_flows_bi[0].squeeze(0).detach()
+        completed_backward = completed_flows_bi[1].squeeze(0).detach()
+    finally:
+        model.to("cpu")
+
+    forward_mask = flow_masks[:-1]
+    backward_mask = flow_masks[1:]
+    forward_denominator = (forward_mask.sum() * flow_forward.shape[1]).clamp_min(1.0)
+    backward_denominator = (backward_mask.sum() * flow_backward.shape[1]).clamp_min(1.0)
+    stats = {
+        "completion_mask_ratio": float(flow_masks.mean().cpu()),
+        "forward_delta": float(
+            ((completed_forward - flow_forward).abs() * forward_mask).sum().cpu()
+            / forward_denominator.cpu()
+        ),
+        "backward_delta": float(
+            ((completed_backward - flow_backward).abs() * backward_mask).sum().cpu()
+            / backward_denominator.cpu()
+        ),
+    }
+
+    del predicted_flows_bi, completed_flows_bi, flows_bi, masks
+    torch.cuda.empty_cache()
+    return completed_forward, completed_backward, stats
+
+
+@torch.no_grad()
+def prepare_temporal_conditions(flow_frames, roi_masks):
+    """Create optional completed flow and stable-BG masks for guidance."""
+    # flow_forward, flow_backward = estimate_bidirectional_flow(flow_frames)
+    # bg_masks = (1.0 - roi_masks).to(device=device, dtype=torch.float32)
+
+    # completion_stats = None
+    # if use_propainter_flow_completion:
+    #     flow_completion_masks = roi_masks.to(device=device, dtype=torch.float32)
+    #     if propainter_mask_mode == "dilated_roi":
+    #         flow_completion_masks = F.max_pool2d(
+    #             flow_completion_masks,
+    #             kernel_size=propainter_dilation_size,
+    #             stride=1,
+    #             padding=propainter_dilation_size // 2,
+    #         ).clamp(0.0, 1.0)
+
+    #     flow_forward, flow_backward, completion_stats = complete_flow_with_propainter(
+    #         flow_forward=flow_forward,
+    #         flow_backward=flow_backward,
+    #         flow_masks=flow_completion_masks,
+    #     )
+
+    
+
+    flow_forward, flow_backward = estimate_bidirectional_flow(flow_frames)
+
+    roi_masks = roi_masks.to(device=device, dtype=torch.float32)
+    bg_masks = 1.0 - roi_masks
+
+    completion_stats = None
+    if use_propainter_flow_completion:
+        raw_visibility = forward_backward_visibility(
+            flow_forward,
+            flow_backward,
+        )
+
+        if propainter_mask_mode == "unreliable_bg":
+            unreliable_pairs = 1.0 - raw_visibility
+
+            unreliable_frames = torch.zeros_like(bg_masks)
+            unreliable_frames[:-1] = torch.maximum(
+                unreliable_frames[:-1],
+                unreliable_pairs,
+            )
+            unreliable_frames[1:] = torch.maximum(
+                unreliable_frames[1:],
+                unreliable_pairs,
+            )
+
+            flow_completion_masks = bg_masks * unreliable_frames
+
+        elif propainter_mask_mode == "bg":
+            flow_completion_masks = bg_masks
+
+        elif propainter_mask_mode == "dilated_roi":
+            flow_completion_masks = F.max_pool2d(
+                roi_masks,
+                kernel_size=propainter_dilation_size,
+                stride=1,
+                padding=propainter_dilation_size // 2,
+            ).clamp(0.0, 1.0)
+
+        else:
+            flow_completion_masks = roi_masks
+
+        flow_forward, flow_backward, completion_stats = (
+            complete_flow_with_propainter(
+                flow_forward=flow_forward,
+                flow_backward=flow_backward,
+                flow_masks=flow_completion_masks,
+            )
+        )
+
+# Recompute reliability after co
+
+
+
+    visibility = forward_backward_visibility(flow_forward, flow_backward)
     stable_bg = build_stable_bg_mask(
         bg_masks=bg_masks,
         flow_backward=flow_backward,
@@ -336,7 +496,7 @@ def prepare_temporal_conditions(flow_frames, roi_masks):
     )
 
     del flow_forward, visibility
-    return flow_backward, stable_bg, bg_masks
+    return flow_backward, stable_bg, bg_masks, completion_stats
 
 
 def blend_with_input(image, image_path, mask_path):
@@ -380,11 +540,15 @@ clips_to_run = [
     for clip_idx, clip in enumerate(clips)
     if any(os.path.basename(image_path) not in existing_basenames for _, (image_path, _) in clip)
 ]
+if max_test_clips > 0:
+    clips_to_run = clips_to_run[:max_test_clips]
 
 print(
-    f"[Fixed shared BG + temporal guidance] clip_size={clip_size}, "
+    f"[Fixed shared BG + ProPainter temporal guidance] clip_size={clip_size}, "
     f"clips_to_run={len(clips_to_run)}, shared_strength={shared_bg_noise_strength}, "
     f"variance_preserving={variance_preserving_shared_noise}, "
+    f"flow_completion={use_propainter_flow_completion}, "
+    f"flow_mask_mode={propainter_mask_mode}, "
     f"temporal_window=[{temporal_start_step}, {temporal_end_step}), "
     f"temporal_scale={temporal_guidance_scale}, every_n_steps={temporal_every_n_steps}"
 )
@@ -429,7 +593,7 @@ for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
     )
 
     if len(clip) > 1 and temporal_guidance_scale > 0:
-        flow_backward, stable_bg, bg_masks = prepare_temporal_conditions(
+        flow_backward, stable_bg, bg_masks, completion_stats = prepare_temporal_conditions(
             flow_frames=flow_frames,
             roi_masks=roi_masks,
         )
@@ -454,6 +618,13 @@ for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
             f"[Clip {clip_idx}] temporal pairs={len(clip) - 1}, "
             f"stable_bg_ratio={stable_bg_ratio:.4f}"
         )
+        if completion_stats is not None:
+            print(
+                f"[Clip {clip_idx}] ProPainter completion: "
+                f"mask_ratio={completion_stats['completion_mask_ratio']:.4f}, "
+                f"forward_delta={completion_stats['forward_delta']:.6f}, "
+                f"backward_delta={completion_stats['backward_delta']:.6f}"
+            )
     else:
         pipe.scheduler.clear_temporal_guidance()
 
@@ -494,7 +665,7 @@ for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
 
     pipe.scheduler.clear_temporal_guidance()
     if len(clip) > 1 and temporal_guidance_scale > 0:
-        del flow_backward, stable_bg, bg_masks
+        del flow_backward, stable_bg, bg_masks, completion_stats
     del flow_frames, roi_masks, flow_frame_tensors, roi_mask_tensors
     torch.cuda.empty_cache()
 

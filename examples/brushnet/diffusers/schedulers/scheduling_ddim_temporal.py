@@ -164,6 +164,7 @@ def bg_temporal_loss(
     stable_bg: torch.FloatTensor,
     charbonnier_eps: float = 1e-3,
     detach_previous: bool = False,
+    loss_type: str = "l2",
 ) -> torch.FloatTensor:
     """Compute robust adjacent-frame temporal loss only on stable BG."""
     if predicted_images.ndim != 4:
@@ -198,7 +199,18 @@ def bg_temporal_loss(
     pair_mask = pair_mask * in_bounds
 
     difference = current_images - warped_previous
-    robust_error = torch.sqrt(difference.square() + float(charbonnier_eps) ** 2)
+
+    if loss_type == "l1":
+        robust_error = difference.abs()
+    elif loss_type == "l2":
+        robust_error = difference.square()
+    elif loss_type == "charbonnier":
+        robust_error = torch.sqrt(difference.square() + float(charbonnier_eps) ** 2)
+    else:
+        raise ValueError(f"Unknown temporal loss type: {loss_type}")
+
+
+    # robust_error = torch.sqrt(difference.square() + float(charbonnier_eps) ** 2)
     numerator = (robust_error * pair_mask).sum()
     denominator = (pair_mask.sum() * images.shape[1]).clamp_min(1.0)
     return numerator / denominator
@@ -239,6 +251,7 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
         normalize_grad: bool = True,
         detach_previous: bool = False,
         enabled: bool = True,
+        loss_type: str = "l2",
     ):
         """Attach fixed clip-level temporal conditions to this scheduler."""
         if not callable(decoder):
@@ -293,6 +306,7 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
         self.temporal_detach_previous = bool(detach_previous)
         self.temporal_guidance_enabled = bool(enabled)
         self.temporal_step_count = 0
+        self.temporal_loss_type = loss_type
 
     def _skip_temporal_guidance(
         self,
@@ -401,6 +415,7 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
                 stable_bg=stable_bg,
                 charbonnier_eps=float(getattr(self, "temporal_charbonnier_eps", 1e-3)),
                 detach_previous=bool(getattr(self, "temporal_detach_previous", False)),
+                loss_type=getattr(self, "temporal_loss_type", "l2")
             )
             if not bool(torch.isfinite(temporal_loss)):
                 return self._skip_temporal_guidance(

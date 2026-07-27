@@ -1,0 +1,2 @@
+sequence,method,frame_count,pair_count,warping_error_l1,warping_error_l2,frame_similarity_ssim
+.,propainter_unreliable_bg_full,150,149,0.03084252292177821,0.002548512908155036,0.783724780584075

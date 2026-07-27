@@ -1,0 +1,74 @@
+{
+  "per_sequence": [
+    {
+      "sequence": ".",
+      "method": "fixedBG_nulltext_09_corr",
+      "frame_count": 60,
+      "pair_count": 59,
+      "warping_error_l1": 0.04100190930194774,
+      "warping_error_l2": 0.004473595733959544,
+      "frame_similarity_ssim": 0.6693019163137103
+    },
+    {
+      "sequence": ".",
+      "method": "fixedBG_nulltext_no_corr",
+      "frame_count": 60,
+      "pair_count": 59,
+      "warping_error_l1": 0.029316647862226278,
+      "warping_error_l2": 0.0025519376454906442,
+      "frame_similarity_ssim": 0.7975738301115521
+    },
+    {
+      "sequence": ".",
+      "method": "nulltext_modelBase",
+      "frame_count": 60,
+      "pair_count": 59,
+      "warping_error_l1": 0.0570172196475126,
+      "warping_error_l2": 0.007972913944178213,
+      "frame_similarity_ssim": 0.4771020912517936
+    },
+    {
+      "sequence": ".",
+      "method": "sharedNoise_fixedBG_095_temporal_v0",
+      "frame_count": 60,
+      "pair_count": 59,
+      "warping_error_l1": 0.026761753168904175,
+      "warping_error_l2": 0.0021970381534074323,
+      "frame_similarity_ssim": 0.8276719844947428
+    }
+  ],
+  "aggregate_by_method": {
+    "fixedBG_nulltext_09_corr": {
+      "sequence_count": 1.0,
+      "frame_count": 60.0,
+      "pair_count": 59.0,
+      "warping_error_l1": 0.04100190930194774,
+      "warping_error_l2": 0.004473595733959544,
+      "frame_similarity_ssim": 0.6693019163137103
+    },
+    "fixedBG_nulltext_no_corr": {
+      "sequence_count": 1.0,
+      "frame_count": 60.0,
+      "pair_count": 59.0,
+      "warping_error_l1": 0.029316647862226278,
+      "warping_error_l2": 0.0025519376454906442,
+      "frame_similarity_ssim": 0.7975738301115521
+    },
+    "nulltext_modelBase": {
+      "sequence_count": 1.0,
+      "frame_count": 60.0,
+      "pair_count": 59.0,
+      "warping_error_l1": 0.0570172196475126,
+      "warping_error_l2": 0.007972913944178213,
+      "frame_similarity_ssim": 0.4771020912517936
+    },
+    "sharedNoise_fixedBG_095_temporal_v0": {
+      "sequence_count": 1.0,
+      "frame_count": 60.0,
+      "pair_count": 59.0,
+      "warping_error_l1": 0.026761753168904175,
+      "warping_error_l2": 0.0021970381534074323,
+      "frame_similarity_ssim": 0.8276719844947428
+    }
+  }
+}

@@ -29,23 +29,23 @@ from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
 
 DEFAULT_BASE_MODEL = (
-    "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/"
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
     "base_model/stable-diffusion-v1-5/stable-diffusion-v1-5"
 )
 DEFAULT_CHECKPOINT_DIR = (
-    "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/checkpoint-3500"
+    "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500"
 )
 DEFAULT_IMAGE_DIR = (
-    "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/"
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
     "dataset/test/Traffic/inputs"
 )
 
 DEFAULT_MASK_DIR = (
-    "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/"
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
     "dataset/test/Traffic/masks"
 )
 DEFAULT_OUTPUT_DIR = (
-    "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/"
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/"
     "Generated_image/Traffic/new/nulltext_checkpoint3500_modelBase"
 )
 DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"

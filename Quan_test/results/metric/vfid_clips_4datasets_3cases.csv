@@ -1,0 +1,16 @@
+dataset,case,frames,clips,clip_length,resize,vfid_clips
+BasketballPass,fixedBG_nulltext,150,141,10,224x224,32.781629707194526
+ParkScene,fixedBG_nulltext,100,91,10,224x224,14.504619837791829
+PartyScene,fixedBG_nulltext,150,141,10,224x224,22.087632015137967
+Traffic,fixedBG_nulltext,60,51,10,224x224,14.902149530020353
+ALL,fixedBG_nulltext,460,424,10,224x224,20.35190947478759
+BasketballPass,nulltext_modelBase,150,141,10,224x224,46.47679236382797
+ParkScene,nulltext_modelBase,100,91,10,224x224,22.757064663439415
+PartyScene,nulltext_modelBase,150,141,10,224x224,31.233621494119333
+Traffic,nulltext_modelBase,60,51,10,224x224,21.699529162750522
+ALL,nulltext_modelBase,460,424,10,224x224,29.573337763557262
+BasketballPass,sharedNoise_fixedBG_095_temporal_v0,150,141,10,224x224,37.105816994610294
+ParkScene,sharedNoise_fixedBG_095_temporal_v0,100,91,10,224x224,12.727830293812172
+PartyScene,sharedNoise_fixedBG_095_temporal_v0,150,141,10,224x224,19.39446014544172
+Traffic,sharedNoise_fixedBG_095_temporal_v0,60,51,10,224x224,13.549492853945855
+ALL,sharedNoise_fixedBG_095_temporal_v0,460,424,10,224x224,20.34264766258346

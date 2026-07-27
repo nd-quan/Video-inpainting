@@ -47,27 +47,27 @@ device="cuda"
 # image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512/images' # open
 # image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/images' # open
 # image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/images' # open  
-image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/images' # open  
+image_dir='/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/images' # open  
 
 # image_dir="/media/ssd2/naeun/NAS_NE/data/data/New/synthesis_COCO"
 
 # mask_dir = "/home/gpu_01/nas_naeun/data/data/test_mask_COCO" # coco
 # mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/masks' # open
 # mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/masks' # open
-mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/masks' # open
+mask_dir='/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/masks' # open
 
 # mask_dir="/media/ssd2/naeun/NAS_NE/data/data/New/mask_COCO"
 
 # caption_txt = "/media/ssd2/naeun/ws04/BrushNet/dataset/opendataset/captions_test_openimage.txt" #open(ws09)
 # caption_txt='/home/gpu_01/nas_naeun/data/data/caption/test/captions_test_COCO.txt' #coco(ws09)
 # caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_raceHorses.txt" # A100
-caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_basketBallPass.txt" # A100
-# caption_txt="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/caption/caption_partyScene.txt" # A100
+caption_txt="/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/caption/caption_basketBallPass.txt" # A100
+# caption_txt="/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/caption/caption_partyScene.txt" # A100
 
 # output_dir = "/media/hdd/naeun/save/BrushNet_200000"
 # output_dir = "/media/hdd/naeun/save/test_with_originalcaption/Brushnet_200000"
 # output_dir='/media/hdd/naeun/save/Opendataset/BrushNet_300000'
-output_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/new/sharedNoise_fixedBG_PGD_v0'
+output_dir='/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/Generated_image/PartyScene_long/new/sharedNoise_fixedBG_PGD_v0'
 # test 15는 14에서 그냥 copy&paste
 # test 16은 blending을 반대로 
 if not os.path.exists(output_dir):
@@ -81,8 +81,8 @@ base_model_path="stable-diffusion-v1-5/stable-diffusion-v1-5" #512
 # brushnet_path="/home/gpu_01/naeun/v8/checkpoint-300000/brushnet"
 
 
-brushnet_path="/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
-# brushnet_path="/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/train_naeun/checkpoint-10/brushnet"
+brushnet_path="/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
+# brushnet_path="/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/train_naeun/checkpoint-10/brushnet"
 
 
 # 블렌딩 설정 바꾸기
@@ -120,7 +120,7 @@ image_encoder = CLIPVisionModelWithProjection.from_pretrained(
 ).to(pipe.device, dtype=pipe.dtype)
 
 # ip_ckpt="/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/model.safetensors"
-ip_ckpt = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_naeun/checkpoint-200000/ipadapter/model.safetensors"
+ip_ckpt = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000/ipadapter/model.safetensors"
 pipe.scheduler = CustomDDIMScheduler.from_config(pipe.scheduler.config)
 pipe.scheduler.per_frame_cge = cge_per_frame
 pipe.scheduler.decode_chunk_size = cge_decode_chunk_size
@@ -134,7 +134,7 @@ pipe.register_modules(
     feature_extractor=CLIPImageProcessor(),
 )
 # fusion_ckpt = "/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/fusion_module.safetensors"
-fusion_ckpt = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_naeun/checkpoint-200000/ipadapter/fusion_module.safetensors"
+fusion_ckpt = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000/ipadapter/fusion_module.safetensors"
 
 ip_model = FusionIPAdapter(
     pipe,

@@ -1,0 +1,74 @@
+{
+  "per_sequence": [
+    {
+      "sequence": ".",
+      "method": "fixedBG_nulltext_09_corr",
+      "frame_count": 100,
+      "pair_count": 99,
+      "warping_error_l1": 0.03769985543131226,
+      "warping_error_l2": 0.0034764663779618915,
+      "frame_similarity_ssim": 0.620670127948928
+    },
+    {
+      "sequence": ".",
+      "method": "fixedBG_nulltext_no_corr",
+      "frame_count": 100,
+      "pair_count": 99,
+      "warping_error_l1": 0.022586041017237938,
+      "warping_error_l2": 0.0015417649916307343,
+      "frame_similarity_ssim": 0.8314162141546257
+    },
+    {
+      "sequence": ".",
+      "method": "nulltext_modelBase",
+      "frame_count": 100,
+      "pair_count": 99,
+      "warping_error_l1": 0.05906116296396111,
+      "warping_error_l2": 0.007730283007740674,
+      "frame_similarity_ssim": 0.37646014020097784
+    },
+    {
+      "sequence": ".",
+      "method": "sharedNoise_fixedBG_095_temporal_v0",
+      "frame_count": 100,
+      "pair_count": 99,
+      "warping_error_l1": 0.02543599149118168,
+      "warping_error_l2": 0.0018850097907801167,
+      "frame_similarity_ssim": 0.820011855375887
+    }
+  ],
+  "aggregate_by_method": {
+    "fixedBG_nulltext_09_corr": {
+      "sequence_count": 1.0,
+      "frame_count": 100.0,
+      "pair_count": 99.0,
+      "warping_error_l1": 0.03769985543131226,
+      "warping_error_l2": 0.0034764663779618915,
+      "frame_similarity_ssim": 0.620670127948928
+    },
+    "fixedBG_nulltext_no_corr": {
+      "sequence_count": 1.0,
+      "frame_count": 100.0,
+      "pair_count": 99.0,
+      "warping_error_l1": 0.022586041017237938,
+      "warping_error_l2": 0.0015417649916307343,
+      "frame_similarity_ssim": 0.8314162141546257
+    },
+    "nulltext_modelBase": {
+      "sequence_count": 1.0,
+      "frame_count": 100.0,
+      "pair_count": 99.0,
+      "warping_error_l1": 0.05906116296396111,
+      "warping_error_l2": 0.007730283007740674,
+      "frame_similarity_ssim": 0.37646014020097784
+    },
+    "sharedNoise_fixedBG_095_temporal_v0": {
+      "sequence_count": 1.0,
+      "frame_count": 100.0,
+      "pair_count": 99.0,
+      "warping_error_l1": 0.02543599149118168,
+      "warping_error_l2": 0.0018850097907801167,
+      "frame_similarity_ssim": 0.820011855375887
+    }
+  }
+}

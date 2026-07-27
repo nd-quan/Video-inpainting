@@ -561,11 +561,11 @@ FVD:      {results['FVD']:.4f}
 if __name__ == "__main__":
 
     # REF_VIDEO = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/video/BasketballPass_gt.mp4"
-    REF_VIDEO = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/video/BasketballPass_gt.mp4"
+    REF_VIDEO = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/video/gt_3s.mp4"
 
-    DIST_VIDEO = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/BasketballPass/fixedBG_nulltext_checkpoint3500_09_corr.mp4"
+    DIST_VIDEO = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_video/PartyScene/finetuning/flowCompletion_v1.mp4"
 
-    OUTPUT_TXT = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/metric/BasketballPass_fixedBG_nulltext_checkpoint3500_09_corr.txt"
+    OUTPUT_TXT = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/metric/PartyScene_flowCompletion_v1.txt"
 
     compute_video_metrics_mp4(
         ref_video=REF_VIDEO,

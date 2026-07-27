@@ -288,7 +288,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene/new/fixedBG_nulltext_checkpoint3500_noSharedNoise"),
+        default=Path("/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/flow_ablation/propainter_unreliable_bg_full"),
         # default=Path("/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/fixedBG_nulltext_checkpoint3500"),
 
         help="Root folder containing generated frames as <sequence>/<method>/*.png.",
@@ -297,13 +297,13 @@ def parse_args() -> argparse.Namespace:
         "--csv",
         type=Path,
         default=None,
-        help="CSV output path. Default: <root>/temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.csv",
+        help="CSV output path. Default: <root>/propainter_unreliable_bg_full.csv",
     )
     parser.add_argument(
         "--json",
         type=Path,
         default=None,
-        help="JSON output path. Default: <root>/temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.json",
+        help="JSON output path. Default: <root>/propainter_unreliable_bg_full.json",
     )
     return parser.parse_args()
 
@@ -312,8 +312,8 @@ def main() -> None:
     args = parse_args()
     ensure_cv2()
     root = args.root.resolve()
-    csv_path = args.csv or root / "temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.csv"
-    json_path = args.json or root / "temporal_metrics_fixedBG_nulltext_checkpoint3500_noSharedNoise.json"
+    csv_path = args.csv or root / "propainter_unreliable_bg_full.csv"
+    json_path = args.json or root / "propainter_unreliable_bg_full.json"
 
     if not root.exists():
         raise FileNotFoundError(f"Root folder does not exist: {root}")
