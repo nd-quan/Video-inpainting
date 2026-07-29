@@ -1,77 +1,97 @@
-import cv2
-import os
-
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/frameBase"
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/PartyScene_long/new/sharedNoise_fixedBG_CGE_v0_2"
+import argparse
+import subprocess
+from pathlib import Path
 
 
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/sharedNoise_v0"
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/frameBase"
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/gt"
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/images"
+DEFAULT_DATASET_ROOT = Path(
+    "/media/ssd1/ndquan/NAS_ndq/model_base/videoInpainting/Datasets/SFU"
+)
 
-
-img_dir = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_image/ParkScene/finetuning_ckpt3500/propainter_unreliable_bg_full"
-# img_dir = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/Generated_image/BasketballPass/new/fixedBG_nulltext_checkpoint3500" 
-# img_dir_0 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/ParkScene/gt" 
-
-# img_dir_1 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/ParkScene/inputs" 
-
-# img_dir_2 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/Traffic/gt" 
-
-# img_dir_3 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/Traffic/inputs" 
-
-
-
-# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/party_scene_sharedNoise_v1.mp4"
-# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/PartyScene_gt_new.mp4"
-
-vid_output_path = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_video/ParkScene/finetuning/flowCompletion_v1.mp4"
-# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/Quan_test/results/video/sharedNoise_fixedBG_CGE_v0_2.mp4"
-# vid_output_path_0 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/ParkScene/video/gt.mp4"
-# vid_output_path_1 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/ParkScene/video/inputs.mp4"
-# vid_output_path_2 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/Traffic/video/gt.mp4"
-# vid_output_path_3 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/Traffic/video/inputs.mp4"
-# vid_output_path = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/video/BasketballPass/fixedBG_nulltext_checkpoint3500.mp4"
-
-
-# vid_output_path = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/video/party_scene_input.mp4"
-
-# Get list of image files in the directory
-img_files = sorted([f for f in os.listdir(img_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
-
-
+CASES = {
+    "BasketballDrill_832x480_50_roi18_bg52": 50,
+    "BlowingBubbles_416x240_50_roi18_bg52": 50,
+    "BQSquare_416x240_60_roi18_bg52": 60,
+    "FourPeople_1280x720_60_roi18_bg52": 60,
+}
 
 
 def frameToVideo(img_dir, vid_output_path, fps=50):
+    """Convert sequential PNG frames (000000.png, ...) to an MP4 video."""
+    img_dir = Path(img_dir)
+    vid_output_path = Path(vid_output_path)
+    img_files = sorted(img_dir.glob("*.png"))
 
-    # Read the first image to get dimensions
-    first_img_path = os.path.join(img_dir, img_files[0])
-    frame = cv2.imread(first_img_path)
-    height, width = frame.shape[:2]
+    if not img_files:
+        raise FileNotFoundError(f"No PNG frames found in: {img_dir}")
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for .mp4
+    expected_names = [f"{index:06d}.png" for index in range(len(img_files))]
+    actual_names = [path.name for path in img_files]
+    if actual_names != expected_names:
+        raise ValueError(
+            f"Frames in {img_dir} must be contiguous from 000000.png "
+            f"to {len(img_files) - 1:06d}.png"
+        )
 
-    video = cv2.VideoWriter(vid_output_path, fourcc, fps, (width, height))  # fps 
+    vid_output_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v", "error",
+            "-y",
+            "-framerate", str(fps),
+            "-start_number", "0",
+            "-i", str(img_dir / "%06d.png"),
+            "-frames:v", str(len(img_files)),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            str(vid_output_path),
+        ],
+        check=True,
+    )
+    print(
+        f"Saved {vid_output_path} "
+        f"({len(img_files)} frames, {fps} FPS)"
+    )
 
-    for img_file in img_files:
-        img_path = os.path.join(img_dir, img_file)
-        frame = cv2.imread(img_path)
-        video.write(frame)
 
-    video.release()
-    print(f"Video saved to {vid_output_path}")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert GT and input frame folders to videos."
+    )
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=DEFAULT_DATASET_ROOT,
+        help="Directory containing the configured dataset cases.",
+    )
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        choices=CASES,
+        default=list(CASES),
+        help="Cases to process (default: all four cases).",
+    )
+    args = parser.parse_args()
+
+    # Validate all sources before producing partial output.
+    missing = [
+        args.dataset_root / case_name / frame_type
+        for case_name in args.cases
+        for frame_type in ("GT", "input")
+        if not (args.dataset_root / case_name / frame_type).is_dir()
+    ]
+    if missing:
+        parser.error(
+            "Missing frame folder(s):\n  " + "\n  ".join(map(str, missing))
+        )
+
+    for case_name in args.cases:
+        case_dir = args.dataset_root / case_name
+        video_dir = case_dir / "video"
+        fps = CASES[case_name]
+        frameToVideo(case_dir / "GT", video_dir / "gt.mp4", fps)
+        frameToVideo(case_dir / "input", video_dir / "input.mp4", fps)
+
 
 if __name__ == "__main__":
-
-    # os.makedirs(os.path.dirname(vid_output_path_0), exist_ok=True)
-    # os.makedirs(os.path.dirname(vid_output_path_1), exist_ok=True)
-    # os.makedirs(os.path.dirname(vid_output_path_2), exist_ok=True)
-    # os.makedirs(os.path.dirname(vid_output_path_3), exist_ok=True)
-
-    # frameToVideo(img_dir_0, vid_output_path_0, fps=24)
-    # frameToVideo(img_dir_1, vid_output_path_1, fps=24)
-    # frameToVideo(img_dir_2, vid_output_path_2, fps=30)
-    # frameToVideo(img_dir_3, vid_output_path_3, fps=30)
-
-    frameToVideo(img_dir, vid_output_path, fps=30)
+    main()

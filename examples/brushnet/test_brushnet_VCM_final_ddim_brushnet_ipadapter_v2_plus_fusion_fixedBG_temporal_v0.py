@@ -73,7 +73,7 @@ mask_dir = os.environ.get(
 # output_dir='/media/hdd/naeun/save/Opendataset/BrushNet_300000'
 output_dir = os.environ.get(
     "OUTPUT_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_image/PartyScene/finetuning_ckpt3500/sharedNoise_fixedBG_1_temporal_v0_L2",
+    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_image/PartyScene/finetuning_ckpt2000_new/sharedNoise_fixedBG_1_temporal_v0_L2",
 )
 # test 15는 14에서 그냥 copy&paste
 # test 16은 blending을 반대로 

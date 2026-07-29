@@ -69,9 +69,9 @@ check_min_version("0.27.0.dev0")
 
 logger = get_logger(__name__)
 
-DEFAULT_COCO_TRAIN_ROOT = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/COCO_train"
+DEFAULT_COCO_TRAIN_ROOT = "/media/ssd2/ndquan/Data/SFU_train"
 DEFAULT_NULL_CAPTION_FILE = os.path.join(DEFAULT_COCO_TRAIN_ROOT, "caption_empty.txt")
-DEFAULT_CHECKPOINT_200000 = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000"
+DEFAULT_CHECKPOINT_200000 = "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500"
 DEFAULT_BRUSHNET_200000 = os.path.join(DEFAULT_CHECKPOINT_200000, "brushnet")
 DEFAULT_IPADAPTER_200000 = os.path.join(DEFAULT_CHECKPOINT_200000, "ipadapter", "model.safetensors")
 DEFAULT_FUSION_200000 = os.path.join(DEFAULT_CHECKPOINT_200000, "ipadapter", "fusion_module.safetensors")
@@ -659,7 +659,21 @@ def parse_args(input_args=None):
             " or the same number of `--validation_prompt`s and `--validation_image`s"
         )
 
-    for subdir in ("gt", "input", "mask"):
+    gt_candidates = [
+        os.path.join(args.coco_train_root, subdir)
+        for subdir in ("gt", "GT")
+    ]
+    args.gt_folder = next(
+        (candidate for candidate in gt_candidates if os.path.isdir(candidate)),
+        None,
+    )
+    if args.gt_folder is None:
+        raise ValueError(
+            "Ground-truth subfolder not found. Expected one of: "
+            + ", ".join(gt_candidates)
+        )
+
+    for subdir in ("input", "mask"):
         expected_dir = os.path.join(args.coco_train_root, subdir)
         if not os.path.isdir(expected_dir):
             raise ValueError(f"COCO_train subfolder not found: {expected_dir}")
@@ -1121,7 +1135,7 @@ def main(args):
         # Captions are intentionally ignored below: encoder_hidden_states is always built from "".
         # CustomDataset still expects a captions_file to exist, so use a placeholder file.
         captions_file=args.null_caption_file,
-        gt_folder=os.path.join(args.coco_train_root, "gt"),
+        gt_folder=args.gt_folder,
         synthesis_folder=os.path.join(args.coco_train_root, "input"),
         mask_folder=os.path.join(args.coco_train_root, "mask"),
         tokenizer=tokenizer,
