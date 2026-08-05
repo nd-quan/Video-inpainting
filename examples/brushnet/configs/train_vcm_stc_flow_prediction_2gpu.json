@@ -1,0 +1,75 @@
+{
+  "seed": 2026,
+  "output_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1",
+  "checkpoint_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1/checkpoints",
+  "data": {
+    "seed": 2026,
+    "dataset_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow",
+    "manifest": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/manifest.json",
+    "teacher_flow_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/teacher_flows_512x512",
+    "clip_length": 8,
+    "height": 512,
+    "width": 512,
+    "load_gt": false,
+    "train_stride": 1,
+    "valid_stride": 4,
+    "random_horizontal_flip": {
+      "train": true,
+      "valid": false,
+      "test": false
+    }
+  },
+  "model": {
+    "base_model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "resume": null
+  },
+  "flow_predictor": {
+    "checkpoint": null,
+    "latent_channels": 4,
+    "condition_channels": 5,
+    "hidden_channels": 64,
+    "num_attention_heads": 4,
+    "num_transformer_layers": 2,
+    "mlp_ratio": 4.0,
+    "dropout": 0.05,
+    "encoder_architecture": "videocomposer",
+    "condition_group_channels": [5],
+    "videocomposer_pool_size": 128,
+    "flow_prediction_mode": "full",
+    "full_flow_max_displacement": [8.0, 8.0],
+    "beta_mode": "fixed",
+    "fixed_beta": 0.5,
+    "warp_region": "all",
+    "channel_normalize": false,
+    "global_normalize": false
+  },
+  "loss": {
+    "teacher_weight": 1.0,
+    "fb_weight": 0.1,
+    "smoothness_weight": 0.01,
+    "smoothness_edge_weight": 10.0,
+    "charbonnier_eps": 0.001
+  },
+  "trainer": {
+    "device": "cuda",
+    "max_steps": 50000,
+    "batch_size": 4,
+    "valid_batch_size": 2,
+    "gradient_accumulation_steps": 2,
+    "num_workers": 4,
+    "pin_memory": true,
+    "persistent_workers": false,
+    "lr": 0.0001,
+    "min_lr": 0.000001,
+    "warmup_steps": 1000,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.0001,
+    "amp": true,
+    "amp_init_scale": 2048,
+    "grad_clip": 1.0,
+    "log_freq": 20,
+    "valid_freq": 500,
+    "valid_batches": 0,
+    "save_freq": 500
+  }
+}

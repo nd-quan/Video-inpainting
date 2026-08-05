@@ -1,0 +1,65 @@
+{
+  "seed": 2026,
+  "output_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_motion_adapter",
+  "checkpoint_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_motion_adapter/checkpoints",
+  "data": {
+    "dataset_root": "/home/cilab/ndquan/videoInpainting/SFU_train",
+    "manifest": "/home/cilab/ndquan/videoInpainting/SFU_train/split.json",
+    "refined_flow_root": "/home/cilab/ndquan/videoInpainting/SFU_train/refined_flows_432x240_t10",
+    "clip_length": 4,
+    "height": 512,
+    "width": 512,
+    "train_stride": 1,
+    "valid_stride": 2,
+    "caption": ""
+  },
+  "model": {
+    "base_model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "brushnet": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500/brushnet",
+    "resume": null
+  },
+  "ip_adapter": {
+    "enabled": true,
+    "image_encoder": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+    "weights": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500/ipadapter/model.safetensors",
+    "fusion_weights": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500/ipadapter/fusion_module.safetensors",
+    "num_tokens": 4,
+    "scale": 1.0
+  },
+  "adapter": {
+    "bottleneck_channels": 64,
+    "flow_channels": 16,
+    "use_down": true,
+    "use_mid": true,
+    "use_up": false
+  },
+  "loss": {
+    "motion_scale": 1.0,
+    "noise_weight": 1.0,
+    "temporal_weight": 0.05,
+    "temporal_timestep_weighting": true,
+    "residual_weight": 0.0001,
+    "charbonnier_eps": 0.001,
+    "shared_bg_noise_strength": 1.0
+  },
+  "trainer": {
+    "device": "cuda",
+    "max_steps": 10000,
+    "batch_size": 1,
+    "valid_batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "num_workers": 4,
+    "lr": 0.0001,
+    "min_lr": 0.000001,
+    "warmup_steps": 500,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.01,
+    "amp": true,
+    "gradient_checkpointing": true,
+    "grad_clip": 1.0,
+    "log_freq": 20,
+    "valid_freq": 500,
+    "valid_batches": 20,
+    "save_freq": 500
+  }
+}

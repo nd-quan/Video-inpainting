@@ -14,6 +14,8 @@ from diffusers.pipelines.brushnet.pipeline_brushnet_sharedNoise_sameBG_v0_0 impo
     StableDiffusionBrushNetPipeline,
 )
 from diffusers.models.brushnet import BrushNetModel
+from diffusers.models.brushnet_motion_adapter import BrushNetFlowMotionAdapter
+from diffusers.models.stc_noise_shaper import STCConditionedNoiseShaper
 from diffusers.schedulers.scheduling_ddim_temporal import (
     TemporalDDIMScheduler,
     backward_warp,
@@ -30,16 +32,21 @@ from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 from ip_adapter import FusionIPAdapter
 
-PROPAINTER_ROOT = "/media/ssd1/ndquan/videoInpainting/code/pretrained/ProPainter"
-PROPAINTER_FLOW_CKPT = os.path.join(
-    PROPAINTER_ROOT,
-    "weights",
-    "recurrent_flow_completion.pth",
+PROPAINTER_ROOT = os.environ.get(
+    "PROPAINTER_ROOT",
+    "/home/cilab/ndquan/videoInpainting/pretrained/ProPainter",
 )
-if PROPAINTER_ROOT not in sys.path:
-    sys.path.insert(0, PROPAINTER_ROOT)
-
-from model.recurrent_flow_completion import RecurrentFlowCompleteNet
+PROPAINTER_FLOW_CKPT = os.environ.get(
+    "PROPAINTER_FLOW_CKPT",
+    (
+        "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/"
+        "vcm_flowcomp_full_t10_b4/best.pt"
+    ),
+)
+PROPAINTER_RAFT_CKPT = os.environ.get(
+    "PROPAINTER_RAFT_CKPT",
+    os.path.join(PROPAINTER_ROOT, "weights", "raft-things.pth"),
+)
 
 ##################### 디퓨전 값 고정하기 위해서
 import random
@@ -101,7 +108,13 @@ base_model_path="stable-diffusion-v1-5/stable-diffusion-v1-5" #512
 
 # brushnet_path="/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
 
-checkpoint_dir = "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500"
+checkpoint_dir = os.environ.get(
+    "BRUSHNET_CHECKPOINT_DIR",
+    (
+        "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/"
+        "fine-tuning/checkpoint-3500"
+    ),
+)
 
 brushnet_path = f"{checkpoint_dir}/brushnet"
 
@@ -139,6 +152,32 @@ use_propainter_flow_completion = (
 propainter_mask_mode = os.environ.get("PROPAINTER_FLOW_MASK_MODE", "unreliable_bg").lower()
 propainter_dilation_size = int(os.environ.get("PROPAINTER_DILATION_SIZE", "9"))
 max_test_clips = int(os.environ.get("MAX_TEST_CLIPS", "1"))
+motion_adapter_path = os.environ.get("MOTION_ADAPTER_PATH", "")
+motion_adapter_scale = float(os.environ.get("MOTION_ADAPTER_SCALE", "1.0"))
+use_motion_adapter = bool(motion_adapter_path)
+noise_shaper_path = os.environ.get("STC_NOISE_SHAPER_PATH", "")
+noise_shaper_strength = float(os.environ.get("STC_NOISE_SHAPER_STRENGTH", "1.0"))
+use_stc_noise_shaper = bool(noise_shaper_path)
+noise_shaper_flow_mode = "none"
+noise_only_mode = (
+    os.environ.get("STC_NOISE_ONLY_MODE", "0").lower()
+    in {"1", "true", "yes", "on"}
+)
+raft_backend = os.environ.get(
+    "RAFT_BACKEND",
+    "propainter" if noise_only_mode else "torchvision",
+).lower()
+if noise_only_mode:
+    if not use_stc_noise_shaper:
+        raise ValueError(
+            "STC_NOISE_ONLY_MODE=1 requires STC_NOISE_SHAPER_PATH"
+        )
+    if use_motion_adapter:
+        raise ValueError(
+            "STC_NOISE_ONLY_MODE=1 requires an empty MOTION_ADAPTER_PATH"
+        )
+    use_propainter_flow_completion = False
+    temporal_guidance_scale = 0.0
 
 brushnet_conditioning_scale = 1.0
 
@@ -155,6 +194,10 @@ if main_noise_seed == shared_noise_seed:
     raise ValueError("MAIN_NOISE_SEED and SHARED_NOISE_SEED must be different.")
 if not 0.0 <= shared_bg_noise_strength <= 1.0:
     raise ValueError("SHARED_BG_NOISE_STRENGTH must be in [0, 1].")
+if not 0.0 <= noise_shaper_strength <= 1.0:
+    raise ValueError("STC_NOISE_SHAPER_STRENGTH must be in [0, 1].")
+if raft_backend not in {"propainter", "torchvision"}:
+    raise ValueError("RAFT_BACKEND must be 'propainter' or 'torchvision'")
 
 
 if propainter_mask_mode not in valid_propainter_modes:
@@ -171,6 +214,30 @@ brushnet = BrushNetModel.from_pretrained(brushnet_path, torch_dtype=torch.float1
 pipe = StableDiffusionBrushNetPipeline.from_pretrained(
     base_model_path, brushnet=brushnet, torch_dtype=torch.float16, low_cpu_mem_usage=False,safety_checker=None
 )
+if use_motion_adapter:
+    motion_adapter = BrushNetFlowMotionAdapter.from_pretrained(
+        motion_adapter_path,
+        torch_dtype=torch.float16,
+    )
+    pipe.set_motion_adapter(motion_adapter)
+    print(
+        f"[Motion adapter] loaded={motion_adapter_path}, "
+        f"scale={motion_adapter_scale}"
+    )
+if use_stc_noise_shaper:
+    noise_shaper = STCConditionedNoiseShaper.from_pretrained(
+        noise_shaper_path,
+        torch_dtype=torch.float16,
+    )
+    noise_shaper_flow_mode = str(
+        getattr(noise_shaper.config, "flow_prediction_mode", "legacy")
+    ).lower()
+    pipe.set_noise_shaper(noise_shaper)
+    print(
+        f"[STC noise shaper] loaded={noise_shaper_path}, "
+        f"strength={noise_shaper_strength}, "
+        f"flow_mode={noise_shaper_flow_mode}"
+    )
 
 image_encoder_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 image_encoder = CLIPVisionModelWithProjection.from_pretrained(
@@ -201,23 +268,69 @@ ip_model = FusionIPAdapter(
     device,
 )
 
-# RAFT stays on CPU between clips. It is moved to GPU only while computing
-# flow, then offloaded before BrushNet sampling.
-flow_weights = Raft_Large_Weights.DEFAULT
-flow_transform = flow_weights.transforms()
-flow_model = raft_large(weights=flow_weights, progress=True).eval()
-for parameter in flow_model.parameters():
-    parameter.requires_grad_(False)
+# Full-flow STC predicts motion from degraded structural latents and does not
+# require RAFT. Keep RAFT only for temporal guidance, the motion adapter, or a
+# legacy STC checkpoint that consumes an external flow prior.
+requires_external_flow_model = (
+    temporal_guidance_scale > 0
+    or use_motion_adapter
+    or (use_stc_noise_shaper and noise_shaper_flow_mode != "full")
+)
+flow_model = None
+flow_transform = None
+if requires_external_flow_model:
+    # RAFT stays on CPU between clips and moves to GPU only for flow inference.
+    if raft_backend == "propainter":
+        if PROPAINTER_ROOT not in sys.path:
+            sys.path.insert(0, PROPAINTER_ROOT)
+        from model.modules.flow_comp_raft import initialize_RAFT
+
+        if not os.path.isfile(PROPAINTER_RAFT_CKPT):
+            raise FileNotFoundError(
+                f"Missing bundled RAFT checkpoint: {PROPAINTER_RAFT_CKPT}"
+            )
+        flow_model = initialize_RAFT(PROPAINTER_RAFT_CKPT, device="cpu").eval()
+        print(
+            f"[Raw flow] backend=ProPainter RAFT "
+            f"checkpoint={PROPAINTER_RAFT_CKPT}"
+        )
+    else:
+        flow_weights = Raft_Large_Weights.DEFAULT
+        flow_transform = flow_weights.transforms()
+        flow_model = raft_large(weights=flow_weights, progress=True).eval()
+        print("[Raw flow] backend=torchvision RAFT Large DEFAULT")
+    for parameter in flow_model.parameters():
+        parameter.requires_grad_(False)
+else:
+    print("[Raw flow] skipped: STC full-flow prediction is self-contained")
+    use_propainter_flow_completion = False
 
 # Keep the flow-completion model on CPU between clips. RAFT is also offloaded
 # before this model is moved to GPU, so both models do not occupy VRAM together.
 propainter_flow_complete = None
 if use_propainter_flow_completion:
+    if PROPAINTER_ROOT not in sys.path:
+        sys.path.insert(0, PROPAINTER_ROOT)
+    from model.recurrent_flow_completion import RecurrentFlowCompleteNet
+
     if not os.path.isfile(PROPAINTER_FLOW_CKPT):
         raise FileNotFoundError(
             f"Missing ProPainter flow-completion checkpoint: {PROPAINTER_FLOW_CKPT}"
         )
-    propainter_flow_complete = RecurrentFlowCompleteNet(PROPAINTER_FLOW_CKPT).eval()
+    try:
+        flow_checkpoint = torch.load(
+            PROPAINTER_FLOW_CKPT,
+            map_location="cpu",
+            weights_only=True,
+        )
+    except TypeError:
+        flow_checkpoint = torch.load(PROPAINTER_FLOW_CKPT, map_location="cpu")
+    if isinstance(flow_checkpoint, dict) and "model" in flow_checkpoint:
+        flow_checkpoint = flow_checkpoint["model"]
+    propainter_flow_complete = RecurrentFlowCompleteNet()
+    propainter_flow_complete.load_state_dict(flow_checkpoint, strict=True)
+    propainter_flow_complete.eval()
+    print(f"[Flow completion] loaded fine-tuned checkpoint={PROPAINTER_FLOW_CKPT}")
     for parameter in propainter_flow_complete.parameters():
         parameter.requires_grad_(False)
 
@@ -303,12 +416,51 @@ def estimate_bidirectional_flow(frames):
             end = min(start + flow_batch_size, pair_count)
             previous = frames[start:end]
             current = frames[start + 1 : end + 1]
-            previous_input, current_input = flow_transform(previous, current)
-            previous_input = previous_input.to(device=device, dtype=torch.float32)
-            current_input = current_input.to(device=device, dtype=torch.float32)
-
-            forward_flows.append(flow_model(previous_input, current_input)[-1])
-            backward_flows.append(flow_model(current_input, previous_input)[-1])
+            if raft_backend == "propainter":
+                previous_input = F.interpolate(
+                    previous.float(),
+                    size=(240, 432),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                current_input = F.interpolate(
+                    current.float(),
+                    size=(240, 432),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                previous_input = (previous_input * 2.0 - 1.0).to(device)
+                current_input = (current_input * 2.0 - 1.0).to(device)
+                forward_flows.append(
+                    flow_model(
+                        previous_input,
+                        current_input,
+                        iters=20,
+                        test_mode=True,
+                    )[1]
+                )
+                backward_flows.append(
+                    flow_model(
+                        current_input,
+                        previous_input,
+                        iters=20,
+                        test_mode=True,
+                    )[1]
+                )
+            else:
+                previous_input, current_input = flow_transform(previous, current)
+                previous_input = previous_input.to(
+                    device=device, dtype=torch.float32
+                )
+                current_input = current_input.to(
+                    device=device, dtype=torch.float32
+                )
+                forward_flows.append(
+                    flow_model(previous_input, current_input)[-1]
+                )
+                backward_flows.append(
+                    flow_model(current_input, previous_input)[-1]
+                )
 
             del previous_input, current_input
     finally:
@@ -495,8 +647,8 @@ def prepare_temporal_conditions(flow_frames, roi_masks):
         threshold=0.5,
     )
 
-    del flow_forward, visibility
-    return flow_backward, stable_bg, bg_masks, completion_stats
+    del flow_forward
+    return flow_backward, visibility, stable_bg, bg_masks, completion_stats
 
 
 def blend_with_input(image, image_path, mask_path):
@@ -544,11 +696,13 @@ if max_test_clips > 0:
     clips_to_run = clips_to_run[:max_test_clips]
 
 print(
-    f"[Fixed shared BG + ProPainter temporal guidance] clip_size={clip_size}, "
+    f"[Temporal BrushNet] clip_size={clip_size}, "
     f"clips_to_run={len(clips_to_run)}, shared_strength={shared_bg_noise_strength}, "
     f"variance_preserving={variance_preserving_shared_noise}, "
     f"flow_completion={use_propainter_flow_completion}, "
+    f"raft_backend={raft_backend}, noise_only={noise_only_mode}, "
     f"flow_mask_mode={propainter_mask_mode}, "
+    f"motion_adapter={use_motion_adapter}, motion_scale={motion_adapter_scale}, "
     f"temporal_window=[{temporal_start_step}, {temporal_end_step}), "
     f"temporal_scale={temporal_guidance_scale}, every_n_steps={temporal_every_n_steps}"
 )
@@ -592,11 +746,31 @@ for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
         dtype=torch.float32,
     )
 
-    if len(clip) > 1 and temporal_guidance_scale > 0:
-        flow_backward, stable_bg, bg_masks, completion_stats = prepare_temporal_conditions(
-            flow_frames=flow_frames,
-            roi_masks=roi_masks,
+    clip_use_motion_adapter = use_motion_adapter and len(clip) > 1
+    clip_use_stc_noise_shaper = use_stc_noise_shaper and len(clip) > 1
+    needs_motion_conditions = (
+        len(clip) > 1
+        and (
+            temporal_guidance_scale > 0
+            or clip_use_motion_adapter
+            or (
+                clip_use_stc_noise_shaper
+                and noise_shaper_flow_mode != "full"
+            )
         )
+    )
+    if needs_motion_conditions:
+        (
+            flow_backward,
+            motion_confidence,
+            stable_bg,
+            bg_masks,
+            completion_stats,
+        ) = prepare_temporal_conditions(
+                flow_frames=flow_frames,
+                roi_masks=roi_masks,
+            )
+    if len(clip) > 1 and temporal_guidance_scale > 0:
         pipe.scheduler.set_temporal_guidance(
             decoder=pipe.vae.decode,
             flow_backward=flow_backward,
@@ -643,12 +817,50 @@ for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
         negative_prompt=[""] * len(prompt_list),
         generator=sampling_generator,
         latents=clip_noise.to(device=device, dtype=pipe.dtype),
-        use_shared_bg_noise=True,
-        shared_bg_noise=shared_bg_noise.to(device=device, dtype=pipe.dtype),
+        use_shared_bg_noise=not use_stc_noise_shaper,
+        shared_bg_noise=(
+            None
+            if use_stc_noise_shaper
+            else shared_bg_noise.to(device=device, dtype=pipe.dtype)
+        ),
         shared_bg_noise_strength=shared_bg_noise_strength,
         variance_preserving_shared_noise=variance_preserving_shared_noise,
         brushnet_conditioning_scale=brushnet_conditioning_scale,
+        motion_backward_flow=(
+            flow_backward
+            if clip_use_motion_adapter
+            or (
+                clip_use_stc_noise_shaper
+                and noise_shaper_flow_mode != "full"
+            )
+            else None
+        ),
+        motion_confidence=(
+            motion_confidence
+            if clip_use_motion_adapter
+            or (
+                clip_use_stc_noise_shaper
+                and noise_shaper_flow_mode != "full"
+            )
+            else None
+        ),
+        motion_stable_bg=(
+            stable_bg
+            if clip_use_stc_noise_shaper
+            and noise_shaper_flow_mode != "full"
+            else None
+        ),
+        motion_adapter_scale=motion_adapter_scale,
+        use_stc_noise_shaper=clip_use_stc_noise_shaper,
+        noise_shaper_strength=noise_shaper_strength,
+        noise_shaper_clip_length=len(clip),
     )
+
+    if clip_use_stc_noise_shaper:
+        print(
+            f"[Clip {clip_idx}] STC noise stats: "
+            f"{pipe._last_noise_shaper_stats}"
+        )
 
     if len(clip) > 1 and temporal_guidance_scale > 0:
         print(
@@ -664,8 +876,8 @@ for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
         )
 
     pipe.scheduler.clear_temporal_guidance()
-    if len(clip) > 1 and temporal_guidance_scale > 0:
-        del flow_backward, stable_bg, bg_masks, completion_stats
+    if needs_motion_conditions:
+        del flow_backward, motion_confidence, stable_bg, bg_masks, completion_stats
     del flow_frames, roi_masks, flow_frame_tensors, roi_mask_tensors
     torch.cuda.empty_cache()
 

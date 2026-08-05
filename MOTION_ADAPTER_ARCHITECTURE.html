@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flow-Guided Motion Adapter for BrushNet</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5b6475;
+      --paper: #f6f8fc;
+      --panel: #ffffff;
+      --line: #dce2ec;
+      --blue: #2457d6;
+      --blue-soft: #eaf0ff;
+      --green: #17765d;
+      --green-soft: #e7f7f1;
+      --orange: #a65313;
+      --orange-soft: #fff2e5;
+      --red: #a13b4a;
+      --red-soft: #fdecef;
+      --code: #111827;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.62 Inter, ui-sans-serif, system-ui, -apple-system,
+            BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1180px, calc(100% - 36px));
+      margin: 34px auto 80px;
+    }
+    header {
+      padding: 42px;
+      color: white;
+      border-radius: 20px;
+      background:
+        radial-gradient(circle at 88% 18%, #4f7cff 0, transparent 28%),
+        linear-gradient(135deg, #172554, #243b82 55%, #174f71);
+      box-shadow: 0 18px 45px rgba(27, 42, 85, .18);
+    }
+    header h1 { margin: 0 0 10px; font-size: clamp(30px, 4vw, 50px); line-height: 1.12; }
+    header p { max-width: 900px; margin: 8px 0 0; color: #dce7ff; font-size: 18px; }
+    .meta { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 10px; }
+    .pill {
+      padding: 6px 11px;
+      border: 1px solid rgba(255,255,255,.3);
+      border-radius: 999px;
+      background: rgba(255,255,255,.1);
+      font-size: 13px;
+    }
+    section {
+      margin-top: 24px;
+      padding: 30px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 7px 24px rgba(36, 49, 80, .055);
+    }
+    h2 { margin: 0 0 16px; font-size: 27px; line-height: 1.25; }
+    h3 { margin: 27px 0 10px; font-size: 20px; }
+    h4 { margin: 20px 0 8px; }
+    p { margin: 9px 0; }
+    a { color: var(--blue); }
+    code {
+      padding: 2px 5px;
+      color: #16357c;
+      background: #eef2fa;
+      border-radius: 5px;
+      font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre {
+      overflow-x: auto;
+      padding: 18px;
+      color: #dbeafe;
+      background: var(--code);
+      border-radius: 11px;
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre code { padding: 0; color: inherit; background: none; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #eff3fa; }
+    tr:nth-child(even) td { background: #fafbfe; }
+    .callout {
+      margin: 16px 0;
+      padding: 15px 17px;
+      border-left: 4px solid var(--blue);
+      border-radius: 8px;
+      background: var(--blue-soft);
+    }
+    .callout.green { border-color: var(--green); background: var(--green-soft); }
+    .callout.orange { border-color: var(--orange); background: var(--orange-soft); }
+    .callout.red { border-color: var(--red); background: var(--red-soft); }
+    .equation {
+      overflow-x: auto;
+      margin: 16px 0;
+      padding: 15px;
+      text-align: center;
+      background: #f4f6fb;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      font: 17px/1.7 "Times New Roman", serif;
+    }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+    .card { padding: 17px; border: 1px solid var(--line); border-radius: 11px; background: #fcfdff; }
+    .card h3, .card h4 { margin-top: 0; }
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      justify-content: center;
+      gap: 8px;
+      margin: 20px 0;
+    }
+    .node {
+      min-width: 150px;
+      max-width: 220px;
+      padding: 14px;
+      text-align: center;
+      border: 2px solid #b8c7ea;
+      border-radius: 10px;
+      background: var(--blue-soft);
+    }
+    .node.green { border-color: #9ad6c3; background: var(--green-soft); }
+    .node.orange { border-color: #efbe94; background: var(--orange-soft); }
+    .node.gray { border-color: #ccd2dc; background: #f2f4f7; }
+    .arrow { align-self: center; color: #75809a; font-size: 25px; font-weight: 700; }
+    .small { color: var(--muted); font-size: 14px; }
+    ul, ol { padding-left: 23px; }
+    li { margin: 5px 0; }
+    .toc { columns: 2; }
+    footer { padding: 28px 4px; color: var(--muted); text-align: center; font-size: 13px; }
+    @media (max-width: 760px) {
+      header, section { padding: 22px; }
+      .grid { grid-template-columns: 1fr; }
+      .toc { columns: 1; }
+      .arrow { transform: rotate(90deg); width: 100%; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Flow-Guided Motion Adapter for BrushNet</h1>
+    <p>
+      Detailed architecture and implementation specification for injecting
+      refined optical-flow motion information into the existing BrushNet and
+      Stable Diffusion U-Net video restoration pipeline.
+    </p>
+    <div class="meta">
+      <span class="pill">Implementation version: V1</span>
+      <span class="pill">Input clip: B × T frames</span>
+      <span class="pill">Injection: 12 down ports + 1 mid port</span>
+      <span class="pill">Trainable parameters: 3,808,717</span>
+      <span class="pill">Up-path injection: disabled</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Contents</h2>
+    <ol class="toc">
+      <li><a href="#objective">Objective and design constraints</a></li>
+      <li><a href="#system">End-to-end system</a></li>
+      <li><a href="#flow">Refined-flow representation</a></li>
+      <li><a href="#warp">Multi-scale feature warping</a></li>
+      <li><a href="#block">Motion residual block</a></li>
+      <li><a href="#injection">BrushNet/U-Net injection</a></li>
+      <li><a href="#shapes">Tensor shapes and CFG layout</a></li>
+      <li><a href="#training">Training architecture</a></li>
+      <li><a href="#loss">Training objective</a></li>
+      <li><a href="#ddp">Distributed training</a></li>
+      <li><a href="#implementation">Code-level implementation map</a></li>
+      <li><a href="#safety">Initialization and safety properties</a></li>
+      <li><a href="#limitations">Limitations and planned ablations</a></li>
+    </ol>
+  </section>
+
+  <section id="objective">
+    <h2>1. Objective and design constraints</h2>
+    <p>
+      The original BrushNet pipeline processes video frames as an image batch.
+      BrushNet supplies spatial conditioning residuals to the diffusion U-Net,
+      but those residuals do not explicitly communicate motion from the
+      previous frame. The motion adapter introduces adjacent-frame motion while
+      preserving all pretrained components.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Primary objective</h3>
+        <p>
+          Align the previous frame's multi-scale BrushNet features with the
+          current frame using refined backward optical flow, then learn a small
+          residual correction for the U-Net.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Constraints</h3>
+        <ul>
+          <li>Do not change BrushNet or U-Net architecture.</li>
+          <li>Keep all pretrained models frozen.</li>
+          <li>Preserve the image-only baseline at initialization.</li>
+          <li>Support variable clip length and batch size.</li>
+          <li>Handle classifier-free guidance without mixing branches.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout green">
+      <strong>Trainable scope:</strong> only the flow-guided motion adapter is
+      optimized. VAE, CLIP text encoder, CLIP image encoder, IP-Adapter,
+      foreground/background fusion, BrushNet, and diffusion U-Net remain frozen.
+    </div>
+  </section>
+
+  <section id="system">
+    <h2>2. End-to-end system</h2>
+    <div class="flow">
+      <div class="node gray">VCM-decoded clip<br><span class="small">B × T RGB frames</span></div>
+      <div class="arrow">→</div>
+      <div class="node green">Refined flow cache<br><span class="small">F̂<sub>t→t−1</sub> + confidence</span></div>
+      <div class="arrow">→</div>
+      <div class="node">Frozen BrushNet<br><span class="small">multi-scale residuals R<sup>l</sup><sub>t</sub></span></div>
+      <div class="arrow">→</div>
+      <div class="node orange">Motion adapter<br><span class="small">warp + residual correction</span></div>
+      <div class="arrow">→</div>
+      <div class="node">Frozen U-Net<br><span class="small">noise prediction ε̂</span></div>
+    </div>
+    <p>
+      The refined flows are exported offline by the fine-tuned ProPainter
+      recurrent flow-completion model. Offline caching prevents RAFT and flow
+      completion from consuming memory and computation during every diffusion
+      training iteration.
+    </p>
+
+    <h3>Frozen and trainable paths</h3>
+    <table>
+      <thead><tr><th>Component</th><th>Status</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td>VAE</td><td>Frozen</td><td>Encodes ground-truth and VCM-decoded frames into latent space.</td></tr>
+        <tr><td>CLIP text encoder</td><td>Frozen</td><td>Produces text conditioning tokens.</td></tr>
+        <tr><td>CLIP image encoder + FG/BG fusion</td><td>Frozen</td><td>Produces four IP-Adapter image tokens per frame.</td></tr>
+        <tr><td>IP-Adapter attention processors</td><td>Frozen</td><td>Matches the currently deployed conditional U-Net.</td></tr>
+        <tr><td>BrushNet</td><td>Frozen</td><td>Extracts spatial residual features at down, mid, and up ports.</td></tr>
+        <tr><td>Diffusion U-Net</td><td>Frozen parameters</td><td>Backpropagation remains enabled through it so adapter gradients can be computed.</td></tr>
+        <tr><td>Motion adapter</td><td><strong>Trainable</strong></td><td>Predicts confidence-gated temporal residual corrections.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="flow">
+    <h2>3. Refined-flow representation</h2>
+    <p>
+      For two adjacent frames, the implementation stores both directions:
+    </p>
+    <ul>
+      <li><code>refined_f</code>: forward flow, frame <em>t−1</em> to frame <em>t</em>.</li>
+      <li><code>refined_b</code>: backward flow, frame <em>t</em> to frame <em>t−1</em>.</li>
+      <li><code>motion_confidence</code>: full-frame forward/backward consistency and in-bounds confidence.</li>
+      <li><code>stable_bg</code>: confidence restricted to background pixels stable in both aligned frames.</li>
+    </ul>
+    <div class="callout">
+      <strong>The adapter uses backward flow.</strong> For every target position
+      in the current frame, backward flow identifies which position to sample
+      from the previous-frame feature map. This is directly compatible with
+      differentiable backward warping through <code>grid_sample</code>.
+    </div>
+    <div class="equation">
+      F̂<sub>t→t−1</sub>(x) tells the sampler to read the previous feature at
+      x + F̂<sub>t→t−1</sub>(x).
+    </div>
+
+    <h3>Confidence definitions</h3>
+    <p>
+      With forward flow F̂<sub>t−1→t</sub> and backward flow
+      F̂<sub>t→t−1</sub>, the cycle error at a current-frame position is:
+    </p>
+    <div class="equation">
+      e<sub>FB</sub>(x) =
+      ‖F̂<sub>t→t−1</sub>(x) +
+      W(F̂<sub>t−1→t</sub>, F̂<sub>t→t−1</sub>)(x)‖²
+    </div>
+    <div class="equation">
+      C<sub>motion</sub>(x) =
+      𝟙[e<sub>FB</sub>(x) ≤ αm(x) + β] · 𝟙[x is in bounds],
+      &nbsp; α = 0.01, β = 0.5
+    </div>
+    <p>
+      <code>motion_confidence</code> gates adapter corrections over the entire
+      image, including ROI. <code>stable_bg</code> additionally intersects the
+      current background with the backward-warped previous background and is
+      reserved for temporal reconstruction loss.
+    </p>
+  </section>
+
+  <section id="warp">
+    <h2>4. Multi-scale feature warping</h2>
+    <p>
+      BrushNet generates residual maps at several resolutions. The original
+      flow is stored at 432 × 240 and must be resized to each feature resolution
+      H<sub>l</sub> × W<sub>l</sub>. Spatial interpolation alone is not enough:
+      displacement values must also be rescaled.
+    </p>
+    <div class="equation">
+      F̂<sup>l</sup><sub>x</sub> =
+      Resize(F̂<sub>x</sub>) · W<sub>l</sub>/W,
+      &nbsp;&nbsp;
+      F̂<sup>l</sup><sub>y</sub> =
+      Resize(F̂<sub>y</sub>) · H<sub>l</sub>/H
+    </div>
+    <p>
+      The previous-frame residual is aligned to current coordinates as:
+    </p>
+    <div class="equation">
+      R̄<sup>l</sup><sub>t−1→t</sub>(x) =
+      W(R<sup>l</sup><sub>t−1</sub>, F̂<sup>l</sup><sub>t→t−1</sub>)(x) =
+      R<sup>l</sup><sub>t−1</sub>(x + F̂<sup>l</sup><sub>t→t−1</sub>(x))
+    </div>
+    <p>
+      The implementation uses bilinear <code>torch.nn.functional.grid_sample</code>,
+      zero padding, and <code>align_corners=True</code>. Confidence is resized
+      independently to the same feature resolution and clamped to [0, 1].
+    </p>
+  </section>
+
+  <section id="block">
+    <h2>5. Motion residual block</h2>
+    <p>
+      A separate <code>MotionResidualBlock</code> is instantiated for every
+      enabled BrushNet residual port. For a port with C channels, the block
+      receives five information sources.
+    </p>
+    <div class="flow">
+      <div class="node">Current residual<br>R<sup>l</sup><sub>t</sub><br><span class="small">C channels</span></div>
+      <div class="node">Aligned previous<br>R̄<sup>l</sup><sub>t−1→t</sub><br><span class="small">C channels</span></div>
+      <div class="node">Temporal difference<br>R<sup>l</sup><sub>t</sub> − R̄<sup>l</sup><sub>t−1→t</sub><br><span class="small">C channels</span></div>
+      <div class="node green">Flow encoding<br>E<sub>F</sub>(F̂<sup>l</sup>)<br><span class="small">16 channels</span></div>
+      <div class="node green">Confidence<br>C<sup>l</sup><sub>motion</sub><br><span class="small">1 channel</span></div>
+    </div>
+    <p>
+      These features are concatenated into <strong>3C + 17 channels</strong>
+      and projected to a common 64-channel bottleneck.
+    </p>
+
+    <h3>Internal block structure</h3>
+    <pre><code>flow [N, 2, H, W]
+  └─ Conv3×3(2 → 16) → SiLU
+     └─ Conv3×3(16 → 16) → SiLU
+
+concat(current, aligned_previous, difference, flow_features, confidence)
+  └─ Conv1×1(3C + 16 + 1 → 64)
+     └─ residual branch:
+        GroupNorm → SiLU → Conv3×3(64 → 64)
+        GroupNorm → SiLU → Conv3×3(64 → 64)
+     └─ hidden = input_projection + residual_branch
+        └─ zero-initialized Conv1×1(64 → C)
+           └─ learnable scalar gain × confidence</code></pre>
+
+    <div class="equation">
+      ΔR<sup>l</sup><sub>t</sub> =
+      g<sup>l</sup> C<sup>l</sup><sub>motion</sub> ⊙
+      Z<sup>l</sup><sub>out</sub>(
+      H<sup>l</sup> + ResBlock<sup>l</sup>(H<sup>l</sup>))
+    </div>
+    <p>
+      The flow is normalized by feature-map width and height before entering
+      the flow encoder. This makes the learned representation less dependent
+      on the absolute resolution of a BrushNet port.
+    </p>
+  </section>
+
+  <section id="injection">
+    <h2>6. BrushNet/U-Net injection</h2>
+    <p>
+      BrushNet already exposes three residual collections consumed by the
+      modified diffusion U-Net:
+    </p>
+    <table>
+      <thead><tr><th>BrushNet output</th><th>U-Net argument</th><th>V1 adapter status</th></tr></thead>
+      <tbody>
+        <tr><td>Down residual list</td><td><code>down_block_add_samples</code></td><td>Enabled for all 12 ports</td></tr>
+        <tr><td>Mid residual</td><td><code>mid_block_add_sample</code></td><td>Enabled</td></tr>
+        <tr><td>Up residual list</td><td><code>up_block_add_samples</code></td><td>Disabled in V1</td></tr>
+      </tbody>
+    </table>
+    <div class="equation">
+      R̃<sup>l</sup><sub>t</sub> =
+      R<sup>l</sup><sub>t</sub> + s<sub>motion</sub> ΔR<sup>l</sup><sub>t</sub>,
+      &nbsp;&nbsp; R̃<sup>l</sup><sub>0</sub> = R<sup>l</sup><sub>0</sub>
+    </div>
+    <p>
+      Frame zero has no previous frame and is never corrected. The runtime
+      scalar <code>motion_adapter_scale</code> controls injection strength
+      without modifying the saved adapter.
+    </p>
+    <div class="callout orange">
+      Up-path injection is intentionally disabled in the first experiment.
+      Up residuals have high spatial resolution, increase memory consumption,
+      and can directly perturb fine textures. Down + mid provides motion at
+      semantic and structural scales before evaluating higher-risk up-path
+      injection as an ablation.
+    </div>
+  </section>
+
+  <section id="shapes">
+    <h2>7. Tensor shapes and classifier-free guidance</h2>
+    <table>
+      <thead><tr><th>Tensor</th><th>Training shape</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Ground-truth / decoded frames</td><td><code>[B, T, 3, 512, 512]</code></td><td>RGB in [−1, 1]</td></tr>
+        <tr><td>ROI masks</td><td><code>[B, T, 1, 512, 512]</code></td><td>ROI = 1, background = 0</td></tr>
+        <tr><td>Backward refined flow</td><td><code>[B, T−1, 2, 240, 432]</code></td><td>Current frame to previous frame</td></tr>
+        <tr><td>Motion confidence</td><td><code>[B, T−1, 1, 240, 432]</code></td><td>Full-frame adapter gate</td></tr>
+        <tr><td>Stable background</td><td><code>[B, T−1, 1, 240, 432]</code></td><td>Temporal-loss gate</td></tr>
+        <tr><td>Noisy diffusion latents</td><td><code>[B, T, 4, 64, 64]</code></td><td>One shared timestep per clip</td></tr>
+        <tr><td>BrushNet residual at level l</td><td><code>[B·T, C<sub>l</sub>, H<sub>l</sub>, W<sub>l</sub>]</code></td><td>Frames flattened for image models</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Classifier-free guidance at inference</h3>
+    <p>
+      The deployed pipeline concatenates unconditional and conditional
+      branches as:
+    </p>
+    <pre><code>[all unconditional frames, all conditional frames]
+shape = [2 × B × T, C, H, W]</code></pre>
+    <p>
+      The adapter reshapes residuals to
+      <code>[CFG_branch, B, T, C, H, W]</code> before temporal pairing.
+      Therefore frame <em>t−1</em> and frame <em>t</em> are paired only inside
+      the same sample and the same CFG branch. Unconditional and conditional
+      features can never be accidentally warped into one another.
+    </p>
+  </section>
+
+  <section id="training">
+    <h2>8. Training architecture</h2>
+    <ol>
+      <li>Load a sequential VCM clip, ROI masks, refined flows, and confidence maps.</li>
+      <li>Encode clean ground-truth frames into target VAE latents.</li>
+      <li>Encode VCM-decoded frames and concatenate the latent background mask, producing the deployed five-channel BrushNet condition.</li>
+      <li>Construct foreground/background images and obtain the same four frozen IP-Adapter tokens used at inference.</li>
+      <li>Sample one diffusion timestep per clip and repeat it across all T frames.</li>
+      <li>Generate independent ROI noise and correlated/shared background noise.</li>
+      <li>Run frozen BrushNet under <code>no_grad</code> to obtain residual features.</li>
+      <li>Run the trainable motion adapter on down and mid residuals.</li>
+      <li>Run the frozen-parameter U-Net with autograd enabled.</li>
+      <li>Backpropagate diffusion and temporal losses through U-Net operations into the motion adapter.</li>
+    </ol>
+    <div class="callout red">
+      <strong>Important distinction:</strong> U-Net parameters are frozen, but
+      the U-Net forward pass is not detached. Autograd must retain the path from
+      U-Net output to injected residuals; otherwise the motion adapter receives
+      no gradient from the noise-prediction loss.
+    </div>
+
+    <h3>Shared timestep and shared background noise</h3>
+    <p>
+      Every frame in the same clip uses one common diffusion timestep τ. This
+      ensures that temporally paired features operate at the same noise level.
+      Background noise can be correlated across frames:
+    </p>
+    <div class="equation">
+      ε<sub>BG,t</sub> =
+      √(1−ρ) ε<sub>ind,t</sub> + √ρ ε<sub>shared</sub>,
+      &nbsp;&nbsp; ρ = 1.0 by default
+    </div>
+  </section>
+
+  <section id="loss">
+    <h2>9. Training objective</h2>
+    <div class="equation">
+      L = λ<sub>ε</sub>L<sub>noise</sub> +
+      λ<sub>T</sub>√ᾱ<sub>τ</sub>L<sub>temporal</sub> +
+      λ<sub>R</sub>L<sub>residual</sub>
+    </div>
+    <table>
+      <thead><tr><th>Term</th><th>Default weight</th><th>Definition</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Noise prediction</strong></td>
+          <td>λ<sub>ε</sub> = 1.0</td>
+          <td>MSE between predicted and target diffusion noise (or velocity when configured).</td>
+        </tr>
+        <tr>
+          <td><strong>Temporal warp</strong></td>
+          <td>λ<sub>T</sub> = 0.05</td>
+          <td>Charbonnier difference between current predicted-clean latent and the backward-warped previous predicted-clean latent, gated by stable background.</td>
+        </tr>
+        <tr>
+          <td><strong>Residual regularization</strong></td>
+          <td>λ<sub>R</sub> = 10<sup>−4</sup></td>
+          <td>Mean squared magnitude of the adapter's changes to BrushNet residuals.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="equation">
+      L<sub>temporal</sub> =
+      Σ C<sub>BG,t</sub> ρ(
+      ẑ<sup>0</sup><sub>t</sub> −
+      W(ẑ<sup>0</sup><sub>t−1</sub>, F̂<sub>t→t−1</sub>))
+      / (Σ C<sub>BG,t</sub> + ε)
+    </div>
+    <p>
+      Temporal loss is computed in predicted-clean latent space rather than
+      decoded RGB space. This avoids backpropagating through the VAE decoder and
+      substantially reduces VRAM. The √ᾱ<sub>τ</sub> weighting prevents
+      high-noise timesteps from dominating after predicted-clean conversion.
+    </p>
+  </section>
+
+  <section id="ddp">
+    <h2>10. Two-GPU distributed training</h2>
+    <p>
+      The trainer supports PyTorch Distributed Data Parallel. Each process
+      contains a frozen copy of the full pipeline, but DDP wraps only the small
+      trainable motion adapter.
+    </p>
+    <pre><code>CUDA_VISIBLE_DEVICES=1,2 \
+torchrun \
+  --standalone \
+  --nproc_per_node=2 \
+  examples/brushnet/train_motion_adapter_vcm.py \
+  --config examples/brushnet/configs/train_vcm_motion_adapter_2gpu.json</code></pre>
+    <table>
+      <thead><tr><th>Process</th><th>Local CUDA device</th><th>Physical GPU</th></tr></thead>
+      <tbody>
+        <tr><td>Rank 0 / LOCAL_RANK 0</td><td><code>cuda:0</code></td><td>GPU 1</td></tr>
+        <tr><td>Rank 1 / LOCAL_RANK 1</td><td><code>cuda:1</code></td><td>GPU 2</td></tr>
+      </tbody>
+    </table>
+    <p>
+      With batch size one per GPU and gradient accumulation two:
+    </p>
+    <div class="equation">
+      Global batch = 2 GPUs × 1 clip/GPU × 2 accumulation steps = 4 clips
+    </div>
+    <ul>
+      <li><code>DistributedSampler</code> gives each rank different clips.</li>
+      <li><code>no_sync()</code> avoids unnecessary gradient communication during intermediate accumulation steps.</li>
+      <li>Adapter gradients are synchronized at the optimizer boundary.</li>
+      <li>Validation statistics are summed and averaged across ranks.</li>
+      <li>Only rank 0 writes logs, TensorBoard events, and checkpoints.</li>
+    </ul>
+  </section>
+
+  <section id="implementation">
+    <h2>11. Code-level implementation map</h2>
+    <table>
+      <thead><tr><th>File</th><th>Responsibility</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>examples/brushnet/diffusers/models/brushnet_motion_adapter.py</code></td>
+          <td><code>resize_flow</code>, differentiable feature warp, per-port residual block, multi-scale adapter, CFG-safe reshaping.</td>
+        </tr>
+        <tr>
+          <td><code>examples/brushnet/diffusers/models/motion_adapter_training.py</code></td>
+          <td>Frozen BrushNet → adapter → frozen U-Net training path and temporal warp loss.</td>
+        </tr>
+        <tr>
+          <td><code>examples/brushnet/motion_adapter_dataset.py</code></td>
+          <td>Sequential clip construction, RGB/mask loading, refined-flow NPZ loading, horizontal-flow augmentation.</td>
+        </tr>
+        <tr>
+          <td><code>examples/brushnet/train_motion_adapter_vcm.py</code></td>
+          <td>Model loading, frozen IP conditioning, diffusion objective, AMP, cosine LR, DDP, validation, TensorBoard, checkpoint and resume.</td>
+        </tr>
+        <tr>
+          <td><code>examples/brushnet/diffusers/pipelines/brushnet/pipeline_brushnet_sharedNoise_sameBG_v0_0.py</code></td>
+          <td>Inference-time adapter registration and residual modification inside every denoising step.</td>
+        </tr>
+        <tr>
+          <td><code>pretrained/ProPainter/scripts/export_vcm_refined_flows.py</code></td>
+          <td>Offline recurrent flow refinement and export of bidirectional flows and confidence maps.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Core forward logic</h3>
+    <pre><code># BrushNet residual extraction is frozen and detached.
+with torch.no_grad():
+    down, mid, up = brushnet(
+        noisy_latents,
+        timestep,
+        encoder_hidden_states=context,
+        brushnet_cond=conditioning_latents,
+        return_dict=False,
+    )
+
+# Only this module is trainable.
+down, mid, up = motion_adapter(
+    down,
+    mid,
+    up,
+    backward_flow=refined_backward_flow,
+    confidence=motion_confidence,
+    cfg_branches=1,
+    scale=motion_scale,
+)
+
+# U-Net weights are frozen, but this call remains in the autograd graph.
+noise_prediction = unet(
+    noisy_latents,
+    timestep,
+    encoder_hidden_states=context,
+    down_block_add_samples=down,
+    mid_block_add_sample=mid,
+    up_block_add_samples=up,
+    return_dict=False,
+)[0]</code></pre>
+  </section>
+
+  <section id="safety">
+    <h2>12. Initialization and safety properties</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Exact baseline at initialization</h3>
+        <p>
+          Every output projection is initialized with zero weights and zero
+          bias. Therefore ΔR = 0 for every port before training, regardless of
+          flow, confidence, or random internal weights.
+        </p>
+      </div>
+      <div class="card">
+        <h3>No correction for frame zero</h3>
+        <p>
+          Corrections are allocated only for frame indices 1…T−1. The first
+          frame remains identical to the original BrushNet output.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Confidence gating</h3>
+        <p>
+          Inconsistent or out-of-bounds motion is suppressed before injection,
+          limiting the influence of unreliable flow.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Residual rather than replacement</h3>
+        <p>
+          The adapter adds a scaled correction. It never discards the original
+          pretrained BrushNet residual.
+        </p>
+      </div>
+    </div>
+    <h3>Implemented unit tests</h3>
+    <ul>
+      <li>Flow displacement is scaled correctly during resize.</li>
+      <li>Backward warp uses the current-to-previous direction.</li>
+      <li>Zero initialization exactly preserves the baseline under CFG.</li>
+      <li>The first frame is never corrected.</li>
+      <li>Zero flow produces stable confidence for identical backgrounds.</li>
+      <li>Identical frames produce near-zero temporal loss.</li>
+      <li>Gradients reach the adapter through a frozen U-Net.</li>
+    </ul>
+  </section>
+
+  <section id="limitations">
+    <h2>13. Limitations and planned ablations</h2>
+    <ul>
+      <li>V1 uses only first-order adjacent-frame propagation; it does not maintain a recurrent hidden state across the entire video.</li>
+      <li>It uses bilinear warping rather than deformable alignment. This is smaller and safer but may be weaker near occlusion boundaries.</li>
+      <li>Up-path residual adaptation is disabled until down + mid behavior is validated.</li>
+      <li>Flow refinement and motion-adapter training are separate stages; gradients do not update the flow model.</li>
+      <li>Each DDP rank replicates the frozen diffusion stack, so DDP improves throughput but does not reduce per-GPU model memory.</li>
+    </ul>
+    <h3>Recommended ablations</h3>
+    <ol>
+      <li>Image-only baseline versus motion adapter.</li>
+      <li>Raw RAFT flow versus fine-tuned refined flow.</li>
+      <li>No confidence gate versus full-frame motion confidence.</li>
+      <li>Down-only versus down + mid versus down + mid + up.</li>
+      <li>Motion adapter only versus temporal scheduler guidance only versus both.</li>
+      <li>Motion scale values 0.25, 0.5, 0.75, and 1.0.</li>
+    </ol>
+  </section>
+
+  <footer>
+    Generated from the implemented BrushNet motion-adapter training and
+    inference code in /home/cilab/ndquan/videoInpainting/code/BrushNet.
+  </footer>
+</main>
+</body>
+</html>

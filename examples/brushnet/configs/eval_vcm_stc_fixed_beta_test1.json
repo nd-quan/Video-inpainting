@@ -1,0 +1,55 @@
+{
+  "seed": 2026,
+  "output_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_fixed_beta_test1",
+  "data": {
+    "dataset_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow",
+    "manifest": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/manifest.json",
+    "split": "test",
+    "clip_length": 8,
+    "height": 512,
+    "width": 512,
+    "test_stride": 8,
+    "load_gt": true,
+    "validate_files": true,
+    "require_all_sequences": false,
+    "caption": "",
+    "random_horizontal_flip": false
+  },
+  "model": {
+    "base_model": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "stage1_checkpoint": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1/checkpoints/best_to_test1.json",
+    "v8_checkpoint": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning-v8/checkpoint-2000"
+  },
+  "ip_adapter": {
+    "image_encoder": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+    "num_tokens": 4,
+    "scale": 1.0,
+    "include_base_image": true,
+    "fusion_scale": 1.0,
+    "v8_mask_order": true
+  },
+  "noise_shaping": {
+    "fixed_beta": 0.5,
+    "strength": 1.0,
+    "warp_region": "all"
+  },
+  "inference": {
+    "device": "cuda",
+    "dtype": "float16",
+    "num_inference_steps": 50,
+    "guidance_scale": 7.5,
+    "negative_prompt": "",
+    "brushnet_conditioning_scale": 1.0,
+    "model_cpu_offload": false,
+    "composite_input_roi": true,
+    "roi_blending": "gaussian_soft",
+    "gaussian_kernel_size": 21,
+    "gaussian_sigma": 0.0,
+    "save_video": true,
+    "video_codec": "mp4v",
+    "save_raw_generation": false,
+    "save_raw_video": false,
+    "max_clips": 0,
+    "overwrite": false
+  }
+}

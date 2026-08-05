@@ -125,6 +125,82 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
+def _encode_brushnet_and_stc_condition_latents(vae, image):
+    """Encode once, preserving sampled BrushNet and deterministic STC latents."""
+    distribution = vae.encode(image).latent_dist
+    scaling_factor = vae.config.scaling_factor
+    return (
+        distribution.sample() * scaling_factor,
+        distribution.mode() * scaling_factor,
+    )
+
+
+def _prepare_stc_noise_sequences(
+    noise: torch.Tensor,
+    structural_latents: torch.Tensor,
+    bg_mask: torch.Tensor,
+    flow_input: Optional[torch.Tensor],
+    flow_mode: str,
+    clip_length: Optional[int],
+):
+    """Resolve flattened pipeline batches into explicit ``[B,T,...]`` clips."""
+    if noise.ndim != 4:
+        raise ValueError("Initial noise must have shape [B*T,C,H,W]")
+    flow_mode = str(flow_mode).lower()
+    if flow_input is None:
+        if flow_mode != "full":
+            raise ValueError("Legacy STC noise shaping requires motion_backward_flow")
+        if clip_length is None:
+            raise ValueError(
+                "Full-flow STC noise shaping requires noise_shaper_clip_length "
+                "so independent videos cannot be merged into one sequence"
+            )
+        frames = int(clip_length)
+        if frames <= 0 or noise.shape[0] % frames:
+            raise ValueError(
+                "noise_shaper_clip_length must be positive and divide "
+                f"the initial-noise batch ({noise.shape[0]})"
+            )
+        batch = noise.shape[0] // frames
+    else:
+        if flow_input.ndim == 4:
+            flow_input = flow_input.unsqueeze(0)
+        if flow_input.ndim != 5 or flow_input.shape[2] != 2:
+            raise ValueError(
+                "motion_backward_flow must be [B,T-1,2,H,W] or [T-1,2,H,W]"
+            )
+        batch, pairs = flow_input.shape[:2]
+        frames = pairs + 1
+    expected = batch * frames
+    if noise.shape[0] != expected:
+        raise ValueError(
+            f"Initial-noise batch {noise.shape[0]} does not match "
+            f"motion B*T={batch}*{frames}={expected}"
+        )
+    if structural_latents.ndim != 4 or structural_latents.shape[0] < expected:
+        raise ValueError(
+            "STC structural latents must be [B*T,C,H,W] with enough frames"
+        )
+    if bg_mask.ndim != 4 or bg_mask.shape[0] < expected or bg_mask.shape[1] != 1:
+        raise ValueError("STC background mask must be [B*T,1,H,W]")
+    if structural_latents.shape[1:] != noise.shape[1:]:
+        raise ValueError("STC structural latents must match initial-noise CHW")
+    if bg_mask.shape[-2:] != noise.shape[-2:]:
+        raise ValueError("STC background mask must match initial-noise spatial size")
+    return {
+        "independent_noise": noise.reshape(batch, frames, *noise.shape[1:]),
+        "decoded_latents": structural_latents[:expected].reshape(
+            batch, frames, *structural_latents.shape[1:]
+        ),
+        "bg_mask": bg_mask[:expected].reshape(
+            batch, frames, 1, *bg_mask.shape[-2:]
+        ),
+        "backward_flow": flow_input,
+        "batch": batch,
+        "frames": frames,
+    }
+
+
 class StableDiffusionBrushNetPipeline(
     DiffusionPipeline,
     StableDiffusionMixin,
@@ -219,6 +295,27 @@ class StableDiffusionBrushNetPipeline(
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True)
         self._cached_shared_bg_noise = None
         self.register_to_config(requires_safety_checker=requires_safety_checker)
+        self.motion_adapter = None
+        self.noise_shaper = None
+        self._last_noise_shaper_stats = None
+
+    def set_motion_adapter(self, motion_adapter):
+        """Attach a BrushNetFlowMotionAdapter before moving/offloading the pipeline."""
+        self.register_modules(motion_adapter=motion_adapter)
+        return self
+
+    def set_noise_shaper(self, noise_shaper):
+        """Attach an STC noise shaper without changing pipeline components.
+
+        The shaper is loaded from its own Stage-1 checkpoint at runtime and is
+        not an ``__init__`` component of this pipeline. Registering it through
+        ``register_modules`` adds it to ``self.config`` and makes Diffusers'
+        ``components`` validation fail when the pipeline is moved to a device.
+        The inference path moves this runtime module explicitly before use.
+        """
+        noise_shaper.eval()
+        self.noise_shaper = noise_shaper
+        return self
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt
     def _encode_prompt(
@@ -852,6 +949,17 @@ class StableDiffusionBrushNetPipeline(
         shared_bg_noise_strength: float = 1.0,
         variance_preserving_shared_noise: bool = False,
 
+        # Flow-guided BrushNet feature injection.
+        motion_backward_flow: Optional[torch.FloatTensor] = None,
+        motion_confidence: Optional[torch.FloatTensor] = None,
+        motion_stable_bg: Optional[torch.FloatTensor] = None,
+        motion_adapter_scale: float = 1.0,
+
+        # STC-conditioned flow-aware initial noise.
+        use_stc_noise_shaper: bool = False,
+        noise_shaper_strength: float = 1.0,
+        noise_shaper_clip_length: Optional[int] = None,
+
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         ip_adapter_image: Optional[PipelineImageInput] = None,
@@ -1125,6 +1233,17 @@ class StableDiffusionBrushNetPipeline(
             generator,
             latents,
         )
+        self._last_noise_shaper_stats = None
+
+        if use_stc_noise_shaper and self.noise_shaper is None:
+            raise ValueError(
+                "use_stc_noise_shaper=True requires pipe.set_noise_shaper(...)"
+            )
+        if use_stc_noise_shaper and (use_shared_bg_noise or shared_bg_noise is not None):
+            raise ValueError(
+                "STC noise shaping and shared background noise are alternative "
+                "initial-noise constructions; enable only one"
+            )
 
         # Share only the initial background noise across frames/samples.
         # original_mask is 1 on BG and 0 on ROI after the binarization above.
@@ -1199,16 +1318,89 @@ class StableDiffusionBrushNetPipeline(
             latents = noise * self.scheduler.init_noise_sigma
 
 
-        # 6.1 prepare condition latents
-        conditioning_latents=self.vae.encode(image).latent_dist.sample() * self.vae.config.scaling_factor
+        # 6.1 prepare condition latents. BrushNet keeps its historical posterior
+        # sample, while full-flow STC uses the deterministic posterior mode so
+        # geometry prediction is not perturbed by VAE sampling noise.
+        (
+            conditioning_image_latents,
+            stc_structural_latents,
+        ) = _encode_brushnet_and_stc_condition_latents(
+            self.vae,
+            image,
+        )
         mask = torch.nn.functional.interpolate(
-                    original_mask, 
+                    original_mask,
                     size=(
-                        conditioning_latents.shape[-2], 
-                        conditioning_latents.shape[-1]
+                        conditioning_image_latents.shape[-2],
+                        conditioning_image_latents.shape[-1]
                     )
                 )
-        conditioning_latents = torch.concat([conditioning_latents,mask],1)
+        conditioning_latents = torch.concat(
+            [conditioning_image_latents, mask], dim=1
+        )
+
+        if use_stc_noise_shaper:
+            flow_mode = str(
+                getattr(self.noise_shaper.config, "flow_prediction_mode", "legacy")
+            ).lower()
+            stc_inputs = _prepare_stc_noise_sequences(
+                noise=noise,
+                structural_latents=stc_structural_latents,
+                bg_mask=mask,
+                flow_input=motion_backward_flow,
+                flow_mode=flow_mode,
+                clip_length=noise_shaper_clip_length,
+            )
+            # ``enable_model_cpu_offload`` attaches an Accelerate hook that
+            # moves this component just before forward. Calling ``.to`` on a
+            # hooked module is unsafe; a normally resident shaper still needs
+            # the explicit move used by the non-offloaded path.
+            if not hasattr(self.noise_shaper, "_hf_hook"):
+                self.noise_shaper.to(device=device, dtype=latents.dtype)
+            self.noise_shaper.eval()
+            shaped = self.noise_shaper(
+                independent_noise=stc_inputs["independent_noise"],
+                decoded_latents=stc_inputs["decoded_latents"],
+                bg_mask=stc_inputs["bg_mask"],
+                backward_flow=(
+                    stc_inputs["backward_flow"].to(
+                        device=device, dtype=latents.dtype
+                    )
+                    if stc_inputs["backward_flow"] is not None
+                    else None
+                ),
+                motion_confidence=(
+                    motion_confidence.to(device=device, dtype=latents.dtype)
+                    if motion_confidence is not None
+                    else None
+                ),
+                stable_bg=(
+                    motion_stable_bg.to(device=device, dtype=latents.dtype)
+                    if motion_stable_bg is not None
+                    else None
+                ),
+                strength=float(noise_shaper_strength),
+            )
+            self._last_noise_shaper_stats = {
+                "beta_mean": float(shaped["beta_mean"].float().cpu()),
+                "effective_beta_mean": float(
+                    shaped["effective_beta_mean"].float().cpu()
+                ),
+                "noise_mean": float(shaped["noise_mean"].float().cpu()),
+                "noise_std": float(shaped["noise_std"].float().cpu()),
+                "noise_warp_error": float(
+                    shaped["noise_warp_error"].float().cpu()
+                ),
+                "flow_residual_energy": float(
+                    shaped["flow_residual_energy"].float().cpu()
+                ),
+                "flow_prediction_energy": float(
+                    shaped["flow_prediction_energy"].float().cpu()
+                ),
+                "flow_prediction_mode": flow_mode,
+            }
+            noise = shaped["noise"].reshape_as(noise)
+            latents = noise * self.scheduler.init_noise_sigma
 
 
         # 6.5 Optionally get Guidance Scale Embedding
@@ -1280,6 +1472,40 @@ class StableDiffusionBrushNetPipeline(
                     guess_mode=guess_mode,
                     return_dict=False,
                 )
+
+                if (
+                    self.motion_adapter is not None
+                    and motion_backward_flow is not None
+                    and motion_adapter_scale != 0
+                ):
+                    motion_device = mid_block_res_sample.device
+                    motion_dtype = mid_block_res_sample.dtype
+                    motion_flow_input = motion_backward_flow.to(
+                        device=motion_device, dtype=motion_dtype
+                    )
+                    motion_confidence_input = (
+                        motion_confidence.to(device=motion_device, dtype=motion_dtype)
+                        if motion_confidence is not None
+                        else None
+                    )
+                    cfg_branches = (
+                        1
+                        if guess_mode and self.do_classifier_free_guidance
+                        else (2 if self.do_classifier_free_guidance else 1)
+                    )
+                    (
+                        down_block_res_samples,
+                        mid_block_res_sample,
+                        up_block_res_samples,
+                    ) = self.motion_adapter(
+                        down_block_res_samples,
+                        mid_block_res_sample,
+                        up_block_res_samples,
+                        backward_flow=motion_flow_input,
+                        confidence=motion_confidence_input,
+                        cfg_branches=cfg_branches,
+                        scale=motion_adapter_scale,
+                    )
 
                 if guess_mode and self.do_classifier_free_guidance:
                     # Infered BrushNet only for the conditional batch.

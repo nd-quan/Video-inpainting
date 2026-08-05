@@ -32,6 +32,23 @@ if is_torch_available():
     _import_structure["autoencoders.autoencoder_tiny"] = ["AutoencoderTiny"]
     _import_structure["autoencoders.consistency_decoder_vae"] = ["ConsistencyDecoderVAE"]
     _import_structure["brushnet"] = ["BrushNetModel"]
+    _import_structure["brushnet_motion_adapter"] = ["BrushNetFlowMotionAdapter"]
+    _import_structure["stc_condition_adapter"] = [
+        "STCBrushNetConditionAdapter",
+        "STCResidualProjection",
+    ]
+    _import_structure["motion_adapter_training"] = [
+        "FrozenBrushNetMotionModel",
+        "build_flow_confidence",
+        "build_stable_bg_confidence",
+        "temporal_warp_loss",
+    ]
+    _import_structure["stc_noise_shaper"] = [
+        "STCConditionEncoder",
+        "STCConditionedNoiseShaper",
+        "VideoComposerSTCConditionEncoder",
+        "gaussian_backward_warp",
+    ]
     _import_structure["controlnet"] = ["ControlNetModel"]
     _import_structure["dual_transformer_2d"] = ["DualTransformer2DModel"]
     _import_structure["embeddings"] = ["ImageProjection"]
@@ -69,6 +86,23 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
             ConsistencyDecoderVAE,
         )
         from .brushnet import BrushNetModel
+        from .brushnet_motion_adapter import BrushNetFlowMotionAdapter
+        from .stc_condition_adapter import (
+            STCBrushNetConditionAdapter,
+            STCResidualProjection,
+        )
+        from .motion_adapter_training import (
+            FrozenBrushNetMotionModel,
+            build_flow_confidence,
+            build_stable_bg_confidence,
+            temporal_warp_loss,
+        )
+        from .stc_noise_shaper import (
+            STCConditionEncoder,
+            STCConditionedNoiseShaper,
+            VideoComposerSTCConditionEncoder,
+            gaussian_backward_warp,
+        )
         from .controlnet import ControlNetModel
         from .embeddings import ImageProjection
         from .modeling_utils import ModelMixin

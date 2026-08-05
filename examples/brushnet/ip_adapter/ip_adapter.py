@@ -243,13 +243,18 @@ class IPAdapter:
      
     @torch.inference_mode()
     def get_image_embeds(self, pil_image=None, clip_image_embeds=None):
+        encoder_dtype = next(self.image_encoder.parameters()).dtype
         if pil_image is not None:
             if isinstance(pil_image, Image.Image):
                 pil_image = [pil_image]
             clip_image = self.clip_image_processor(images=pil_image, return_tensors="pt").pixel_values
-            clip_image_embeds = self.image_encoder(clip_image.to(self.device, dtype=torch.float16)).image_embeds
+            clip_image_embeds = self.image_encoder(
+                clip_image.to(self.device, dtype=encoder_dtype)
+            ).image_embeds
         else:
-            clip_image_embeds = clip_image_embeds.to(self.device, dtype=torch.float16)
+            clip_image_embeds = clip_image_embeds.to(
+                self.device, dtype=encoder_dtype
+            )
         image_prompt_embeds = self.image_proj_model(clip_image_embeds)
         uncond_image_prompt_embeds = self.image_proj_model(torch.zeros_like(clip_image_embeds))
         return image_prompt_embeds, uncond_image_prompt_embeds
@@ -424,8 +429,9 @@ class FusionIPAdapter(IPAdapter):
         fg_clip = self.clip_image_processor(images=fg_pil_image, return_tensors="pt").pixel_values
         bg_clip = self.clip_image_processor(images=bg_pil_image, return_tensors="pt").pixel_values
 
-        fg_clip = fg_clip.to(self.device, dtype=torch.float16)
-        bg_clip = bg_clip.to(self.device, dtype=torch.float16)
+        encoder_dtype = next(self.image_encoder.parameters()).dtype
+        fg_clip = fg_clip.to(self.device, dtype=encoder_dtype)
+        bg_clip = bg_clip.to(self.device, dtype=encoder_dtype)
 
         fg_embeds = self.image_encoder(fg_clip).image_embeds   # [B, D]
         bg_embeds = self.image_encoder(bg_clip).image_embeds   # [B, D]

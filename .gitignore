@@ -23,6 +23,7 @@ logs/
 lightning_logs/
 lang_code_data/
 Quan_test/train/
+experiments/
 
 # Distribution / packaging
 .Python

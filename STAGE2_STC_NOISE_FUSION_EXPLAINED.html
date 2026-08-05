@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stage 2 — STC Flow-Guided Noise Fusion</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f6f8fb; --card:#fff; --text:#18202b; --muted:#5c6878; --line:#d8dee8; --accent:#2864dc; --code:#eef2f8; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#11151b; --card:#171d25; --text:#e8edf5; --muted:#aab4c3; --line:#303946; --accent:#79a7ff; --code:#202733; } }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.72 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .layout { display:grid; grid-template-columns:290px minmax(0, 900px); gap:30px; max-width:1260px; margin:0 auto; padding:28px; }
+    nav { position:sticky; top:20px; align-self:start; max-height:calc(100vh - 40px); overflow:auto; padding:20px; border:1px solid var(--line); border-radius:14px; background:var(--card); }
+    nav .label { margin:0 0 12px; color:var(--muted); font-size:12px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+    nav ul { margin:0; padding-left:18px; }
+    nav li { margin:5px 0; }
+    nav a { color:var(--muted); text-decoration:none; font-size:14px; }
+    nav a:hover { color:var(--accent); }
+    main { min-width:0; padding:36px 48px; border:1px solid var(--line); border-radius:16px; background:var(--card); box-shadow:0 10px 35px rgba(20,30,50,.06); }
+    h1 { margin-top:0; font-size:2.2rem; line-height:1.2; }
+    h2 { margin-top:2.4em; padding-bottom:.35em; border-bottom:1px solid var(--line); font-size:1.45rem; }
+    h3 { margin-top:1.8em; }
+    p, li { max-width:78ch; }
+    a { color:var(--accent); }
+    .headerlink { margin-left:.35em; opacity:0; text-decoration:none; }
+    h1:hover .headerlink, h2:hover .headerlink, h3:hover .headerlink { opacity:1; }
+    code { padding:.12em .35em; border-radius:5px; background:var(--code); font:0.9em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow:auto; padding:18px 20px; border:1px solid var(--line); border-radius:10px; background:var(--code); }
+    pre code { padding:0; background:transparent; }
+    table { width:100%; border-collapse:collapse; margin:1.25rem 0; }
+    th, td { padding:10px 12px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:var(--code); }
+    blockquote { margin-left:0; padding:2px 18px; border-left:4px solid var(--accent); color:var(--muted); }
+    .source { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+    @media (max-width:900px) { .layout { display:block; padding:12px; } nav { position:relative; top:0; max-height:none; margin-bottom:14px; } main { padding:26px 22px; } }
+    @media print { body { background:#fff; color:#000; } .layout { display:block; max-width:none; padding:0; } nav { display:none; } main { border:0; box-shadow:none; padding:0; } }
+  </style>
+  <script>
+    window.MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] }, options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] } };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <nav aria-label="Table of contents"><p class="label">Contents</p><div class="toc">
+<ul>
+<li><a href="#stage-2-stc-flow-guided-noise-fusion">Stage 2 — STC Flow-Guided Noise Fusion</a><ul>
+<li><a href="#1-short-answer">1. Short answer</a></li>
+<li><a href="#2-two-different-meanings-of-forward">2. Two different meanings of “forward”</a></li>
+<li><a href="#3-inputs-of-one-stage-2-training-batch">3. Inputs of one Stage-2 training batch</a></li>
+<li><a href="#4-frozen-stage-1-motion-representation">4. Frozen Stage-1 motion representation</a></li>
+<li><a href="#5-independent-gaussian-noise">5. Independent Gaussian noise</a></li>
+<li><a href="#6-anchor-noise-warping">6. Anchor-noise warping</a></li>
+<li><a href="#7-learned-beta-and-noise-fusion">7. Learned beta and noise fusion</a></li>
+<li><a href="#8-forward-diffusion-with-the-fusion-noise">8. Forward diffusion with the fusion noise</a></li>
+<li><a href="#9-frozen-denoiser-forward-pass">9. Frozen denoiser forward pass</a></li>
+<li><a href="#10-diffusion-target-and-gradient-path">10. Diffusion target and gradient path</a></li>
+<li><a href="#11-temporal-loss">11. Temporal loss</a></li>
+<li><a href="#12-complete-stage-2-objective">12. Complete Stage-2 objective</a></li>
+<li><a href="#13-what-is-actually-trained">13. What is actually trained?</a></li>
+<li><a href="#14-what-does-the-checkpoint-contain">14. What does the checkpoint contain?</a></li>
+<li><a href="#15-training-versus-inference">15. Training versus inference</a><ul>
+<li><a href="#training">Training</a></li>
+<li><a href="#inference">Inference</a></li>
+</ul>
+</li>
+<li><a href="#16-fixed-beta-variant">16. Fixed-beta variant</a></li>
+<li><a href="#17-code-map">17. Code map</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</nav>
+    <main><h1 id="stage-2-stc-flow-guided-noise-fusion">Stage 2 — STC Flow-Guided Noise Fusion<a class="headerlink" href="#stage-2-stc-flow-guided-noise-fusion" title="Permanent link">&para;</a></h1>
+<h2 id="1-short-answer">1. Short answer<a class="headerlink" href="#1-short-answer" title="Permanent link">&para;</a></h2>
+<p>Yes. During Stage-2 training, the model first constructs a temporally shaped
+noise clip and then uses that noise in the forward-diffusion equation together
+with the encoded clean/GT latent:</p>
+<p>\[
+z_\tau
+=
+\sqrt{\bar\alpha_\tau}\,z_0^{GT}
++
+\sqrt{1-\bar\alpha_\tau}\,\widetilde\epsilon.
+\]</p>
+<p>Here:</p>
+<ul>
+<li>\(z_0^{GT}\) is the VAE latent of the clean ground-truth video;</li>
+<li>\(\widetilde\epsilon\) is the STC flow-guided fusion noise;</li>
+<li>\(z_\tau\) is the noisy latent passed to BrushNet and the diffusion U-Net;</li>
+<li>\(\tau\) is a randomly sampled diffusion timestep.</li>
+</ul>
+<p>The degraded/input latent is <strong>not</strong> the latent being corrupted in this
+equation. It is used as structural conditioning for the STC encoder, flow
+prediction, beta prediction, and BrushNet.</p>
+<h2 id="2-two-different-meanings-of-forward">2. Two different meanings of “forward”<a class="headerlink" href="#2-two-different-meanings-of-forward" title="Permanent link">&para;</a></h2>
+<p>These operations should not be confused:</p>
+<ol>
+<li><strong>Forward diffusion</strong>: analytically adds noise to the clean latent and
+   produces \(z_\tau\). It has no neural-network parameters.</li>
+<li><strong>Denoiser forward pass</strong>: sends \(z_\tau\) through frozen BrushNet and the
+   frozen diffusion U-Net to predict the noise.</li>
+</ol>
+<p>Stage 2 performs both operations in this order.</p>
+<h2 id="3-inputs-of-one-stage-2-training-batch">3. Inputs of one Stage-2 training batch<a class="headerlink" href="#3-inputs-of-one-stage-2-training-batch" title="Permanent link">&para;</a></h2>
+<p>For the current full configuration:</p>
+<pre><code class="language-text">GT video             [B,T,3,512,512]
+Degraded/input video [B,T,3,512,512]
+ROI mask             [B,T,1,512,512], 1=ROI and 0=background
+Clip length          T=8
+</code></pre>
+<p>The frozen VAE produces:</p>
+<p>\[
+z_0^{GT}=E_{VAE}(I^{GT}),
+\qquad
+z^D=E_{VAE}(I^D),
+\]</p>
+<p>with latent tensors approximately shaped as:</p>
+<pre><code class="language-text">[B,T,4,64,64]
+</code></pre>
+<p>The clean latent may use a posterior sample during training. The degraded
+latent uses the posterior mode so that the STC condition remains deterministic.</p>
+<p>The mask passed to the STC/BrushNet path is converted to:</p>
+<p>\[
+M^{BG}=1-M^{ROI}.
+\]</p>
+<h2 id="4-frozen-stage-1-motion-representation">4. Frozen Stage-1 motion representation<a class="headerlink" href="#4-frozen-stage-1-motion-representation" title="Permanent link">&para;</a></h2>
+<p>The Stage-1 checkpoint supplies:</p>
+<pre><code class="language-text">STC encoder
+Adjacent bidirectional flow decoder
+</code></pre>
+<p>The STC input is:</p>
+<p>\[
+H^{STC}=E_{STC}([z^D,M^{BG}]).
+\]</p>
+<p>The shared directional decoder predicts adjacent flow in both directions. The
+backward flow used for noise transport is:</p>
+<p>\[
+F_{t\rightarrow t-1}.
+\]</p>
+<p>During standard Stage 2, the STC encoder and flow decoder are frozen. Flow is
+therefore computed on every batch but its weights are not updated.</p>
+<h2 id="5-independent-gaussian-noise">5. Independent Gaussian noise<a class="headerlink" href="#5-independent-gaussian-noise" title="Permanent link">&para;</a></h2>
+<p>Stage 2 first samples independent noise for every frame:</p>
+<p>\[
+\epsilon_t^{ind}\sim\mathcal N(0,I),
+\qquad t=0,\ldots,T-1.
+\]</p>
+<p>The first frame noise \(\epsilon_0^{ind}\) is used as the temporal anchor.</p>
+<h2 id="6-anchor-noise-warping">6. Anchor-noise warping<a class="headerlink" href="#6-anchor-noise-warping" title="Permanent link">&para;</a></h2>
+<p>Adjacent predicted flows are composed into a current-to-anchor flow
+\(F_{t\rightarrow0}\). Anchor noise is then transported to frame \(t\):</p>
+<p>\[
+\epsilon_t^{warp}
+=W(\epsilon_0^{ind},F_{t\rightarrow0}).
+\]</p>
+<p>Bilinear resampling reduces variance because the output is a weighted sum of
+four samples. The implementation divides by the square root of the sum of the
+squared interpolation weights so that valid warped samples recover unit
+marginal variance.</p>
+<p>The current configuration uses:</p>
+<pre><code class="language-json">&quot;warp_region&quot;: &quot;all&quot;
+</code></pre>
+<p>Therefore noise is warped over the whole frame. The mask is STC semantic
+context; it does not restrict warping to the background. Out-of-frame samples
+are still marked invalid because they have no anchor-noise source.</p>
+<h2 id="7-learned-beta-and-noise-fusion">7. Learned beta and noise fusion<a class="headerlink" href="#7-learned-beta-and-noise-fusion" title="Permanent link">&para;</a></h2>
+<p>The Stage-2 beta head receives the STC feature and predicts a spatial beta map:</p>
+<p>\[
+\beta_t
+=
+\beta_{min}
++
+(\beta_{max}-\beta_{min})
+\sigma(f_\beta(H_t^{STC})).
+\]</p>
+<p>The current bounds are:</p>
+<pre><code class="language-text">beta_min     = 0.05
+beta_max     = 0.95
+initial_beta = 0.50
+</code></pre>
+<p>Let \(V_t\) be geometric warp validity. The effective coefficient is:</p>
+<p>\[
+c_t=\beta_tV_t.
+\]</p>
+<p>The fusion noise is:</p>
+<p>\[
+\widetilde\epsilon_0=\epsilon_0^{ind},
+\]</p>
+<p>\[
+\widetilde\epsilon_t
+=
+c_t\epsilon_t^{warp}
++
+\sqrt{1-c_t^2}\,\epsilon_t^{ind},
+\qquad t&gt;0.
+\]</p>
+<p>This creates temporal correlation while retaining fresh stochastic innovation.
+For an invalid warp, \(V_t=0\), so the frame automatically falls back to fresh
+independent Gaussian noise.</p>
+<h2 id="8-forward-diffusion-with-the-fusion-noise">8. Forward diffusion with the fusion noise<a class="headerlink" href="#8-forward-diffusion-with-the-fusion-noise" title="Permanent link">&para;</a></h2>
+<p>One diffusion timestep \(\tau\) is sampled per video clip and shared by every
+frame in that clip. The scheduler then applies:</p>
+<p>\[
+z_{\tau,t}
+=
+\sqrt{\bar\alpha_\tau}\,z_{0,t}^{GT}
++
+\sqrt{1-\bar\alpha_\tau}\,\widetilde\epsilon_t.
+\]</p>
+<p>In code, this is:</p>
+<pre><code class="language-python">noisy = noise_scheduler.add_noise(
+    gt_latents.flatten(0, 1),
+    shaped_noise.flatten(0, 1),
+    timesteps.repeat_interleave(T),
+)
+</code></pre>
+<p>Thus the fusion noise is not simply added to the latent with coefficient one.
+The scheduler scales the clean latent and noise according to the selected
+diffusion timestep.</p>
+<h2 id="9-frozen-denoiser-forward-pass">9. Frozen denoiser forward pass<a class="headerlink" href="#9-frozen-denoiser-forward-pass" title="Permanent link">&para;</a></h2>
+<p>The resulting noisy latent is passed through:</p>
+<pre><code class="language-text">z_tau
+  -&gt; frozen BrushNet with degraded latent + BG mask condition
+  -&gt; BrushNet down/mid/up residuals
+  -&gt; frozen diffusion U-Net with V8 IP-Adapter conditioning
+  -&gt; predicted noise epsilon_hat
+</code></pre>
+<p>The V8 image condition follows:</p>
+<p>\[
+e_{image}
+=e_{base}+\alpha_{fusion}e_{fusion(FG,BG)}.
+\]</p>
+<p>BrushNet, the U-Net, IP-Adapter, FGBG fusion, VAE, and text encoder are frozen
+in the standard Stage-2 configuration.</p>
+<h2 id="10-diffusion-target-and-gradient-path">10. Diffusion target and gradient path<a class="headerlink" href="#10-diffusion-target-and-gradient-path" title="Permanent link">&para;</a></h2>
+<p>For epsilon prediction, the target is the fusion noise:</p>
+<p>\[
+L_{noise}
+=
+\lVert\widehat\epsilon_\theta(z_\tau,\tau,c)
+-\operatorname{stopgrad}(\widetilde\epsilon)\rVert_2^2.
+\]</p>
+<p>The target is explicitly detached. This is important: beta cannot reduce loss
+by moving both the noisy input and its own training label simultaneously.
+Instead, beta is learned through this path:</p>
+<pre><code class="language-text">beta head
+  -&gt; fusion noise
+  -&gt; noisy latent z_tau
+  -&gt; frozen BrushNet/U-Net
+  -&gt; diffusion loss
+</code></pre>
+<p>Gradients pass through the frozen denoiser to the beta head, but frozen model
+weights do not receive optimizer updates.</p>
+<h2 id="11-temporal-loss">11. Temporal loss<a class="headerlink" href="#11-temporal-loss" title="Permanent link">&para;</a></h2>
+<p>The predicted clean latent is reconstructed from \(z_\tau\) and the predicted
+noise. In epsilon-prediction form:</p>
+<p>\[
+\widehat z_0
+=
+\frac{z_\tau-\sqrt{1-\bar\alpha_\tau}\,\widehat\epsilon}
+{\sqrt{\bar\alpha_\tau}}.
+\]</p>
+<p>The previous predicted-clean latent is warped into the current frame using the
+frozen Stage-1 backward flow:</p>
+<p>\[
+L_{temp}
+=
+\frac{1}{N}
+\sum_{t=1}^{T-1}
+V_t\,
+ho\left(
+\widehat z_{0,t}
+-W(\widehat z_{0,t-1},F_{t\rightarrow t-1})
+\right),
+\]</p>
+<p>where \(\rho\) is the Charbonnier penalty and \(N\) is the number of valid
+latent elements used in the average.</p>
+<p>The flow is detached in this loss. Therefore Stage 2 adjusts beta/noise fusion,
+not the Stage-1 flow predictor.</p>
+<h2 id="12-complete-stage-2-objective">12. Complete Stage-2 objective<a class="headerlink" href="#12-complete-stage-2-objective" title="Permanent link">&para;</a></h2>
+<p>The current full configuration uses:</p>
+<p>\[
+L_{Stage2}
+=
+1.0L_{noise}
++0.05L_{temp}^{weighted}
++0.01L_{noise_stats}
++0.001L_{\beta_prior}
++0.001L_{\beta_smooth}.
+\]</p>
+<p>The auxiliary terms are:</p>
+<ul>
+<li>\(L_{noise_stats}\): encourages mean near zero and standard deviation near
+  one;</li>
+<li>\(L_{\beta_prior}\): keeps mean beta near the configured target, currently
+  0.5;</li>
+<li>\(L_{\beta_smooth}\): discourages abrupt spatial changes in beta.</li>
+</ul>
+<h2 id="13-what-is-actually-trained">13. What is actually trained?<a class="headerlink" href="#13-what-is-actually-trained" title="Permanent link">&para;</a></h2>
+<p>With <code>train_vcm_stc_noise_fusion_2gpu.json</code>, only the beta head is trainable:</p>
+<pre><code class="language-text">Trainable:
+  beta_head
+
+Frozen:
+  STC encoder
+  bidirectional flow decoder
+  VAE
+  text encoder
+  BrushNet
+  IP-Adapter and FGBG fusion
+  diffusion U-Net
+</code></pre>
+<p>The trainer also contains an optional <code>temporal_adapter</code> path, but it is not
+enabled by the standard Stage-2 config. It is a separate ablation and is not
+part of beta-only Stage 2 described here.</p>
+<h2 id="14-what-does-the-checkpoint-contain">14. What does the checkpoint contain?<a class="headerlink" href="#14-what-does-the-checkpoint-contain" title="Permanent link">&para;</a></h2>
+<p>Each Stage-2 checkpoint stores:</p>
+<pre><code class="language-text">checkpoint-XXXXXXX/
+  noise_shaper/
+    config.json
+    diffusion_pytorch_model.safetensors
+  trainer_state.pt
+  config.json
+</code></pre>
+<p><code>noise_shaper</code> contains:</p>
+<pre><code class="language-text">Frozen Stage-1 STC encoder weights
+Frozen Stage-1 flow-decoder weights
+Learned Stage-2 beta-head weights
+Noise-fusion configuration
+</code></pre>
+<p><code>trainer_state.pt</code> contains the optimizer, LR scheduler, AMP scaler, current
+step, and best validation score. <code>latest.json</code> and <code>best.json</code> point to the
+corresponding checkpoint directories.</p>
+<h2 id="15-training-versus-inference">15. Training versus inference<a class="headerlink" href="#15-training-versus-inference" title="Permanent link">&para;</a></h2>
+<h3 id="training">Training<a class="headerlink" href="#training" title="Permanent link">&para;</a></h3>
+<p>GT is available, so forward diffusion constructs a noisy training latent:</p>
+<pre><code class="language-text">GT -&gt; VAE -&gt; clean latent z0
+fusion noise + z0 -&gt; scheduler.add_noise -&gt; z_tau
+z_tau -&gt; frozen denoiser -&gt; training losses
+</code></pre>
+<h3 id="inference">Inference<a class="headerlink" href="#inference" title="Permanent link">&para;</a></h3>
+<p>GT is unavailable. There is no operation that adds noise to a GT latent.
+Instead, the fusion noise itself initializes the reverse diffusion process:</p>
+<pre><code class="language-text">degraded video -&gt; STC -&gt; predicted flow and beta
+Gaussian anchor + warping + fusion -&gt; shaped initial noise z_T
+z_T -&gt; reverse denoising -&gt; reconstructed video
+</code></pre>
+<h2 id="16-fixed-beta-variant">16. Fixed-beta variant<a class="headerlink" href="#16-fixed-beta-variant" title="Permanent link">&para;</a></h2>
+<p>If beta is fixed to 0.5, 0.7, or 0.9, beta-head training and therefore Stage-2
+optimization can be skipped. However, the following Stage-2 computations are
+still required during training and inference:</p>
+<pre><code class="language-text">STC feature extraction
+flow prediction
+flow composition
+anchor-noise warping
+bilinear variance correction
+fixed-beta fusion with independent noise
+</code></pre>
+<p>The resulting shaped noise can then be used directly when training Stage 3.
+Stage 3 should be trained and evaluated with the same fixed-beta setting unless
+beta randomization/conditioning is explicitly introduced.</p>
+<h2 id="17-code-map">17. Code map<a class="headerlink" href="#17-code-map" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Batch construction, shaped noise, forward diffusion and losses:
+  <code>examples/brushnet/train_stc_noise_fusion_vcm.py</code>, <code>compute_batch()</code>.</li>
+<li>Stage-1-to-Stage-2 transfer and beta-only freezing:
+  <code>examples/brushnet/stc_noise_fusion_training.py</code>.</li>
+<li>Flow composition, Gaussian noise warping and beta fusion:
+  <code>examples/brushnet/diffusers/models/stc_noise_shaper.py</code>.</li>
+<li>Standard configuration:
+  <code>examples/brushnet/configs/train_vcm_stc_noise_fusion_2gpu.json</code>.</li>
+</ul><p class="source">Generated from <code>STAGE2_STC_NOISE_FUSION_EXPLAINED.md</code>.</p></main>
+  </div>
+</body>
+</html>

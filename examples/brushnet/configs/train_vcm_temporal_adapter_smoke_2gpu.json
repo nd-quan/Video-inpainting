@@ -1,0 +1,92 @@
+{
+  "seed": 2026,
+  "output_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_temporal_adapter_stage2a_smoke",
+  "checkpoint_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_temporal_adapter_stage2a_smoke/checkpoints",
+  "data": {
+    "seed": 2026,
+    "dataset_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow",
+    "manifest": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/manifest.json",
+    "clip_length": 8,
+    "height": 512,
+    "width": 512,
+    "train_stride": 8,
+    "valid_stride": 16,
+    "caption": "",
+    "random_horizontal_flip": {
+      "train": true,
+      "valid": false,
+      "test": false
+    }
+  },
+  "model": {
+    "base_model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "brushnet": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500/brushnet",
+    "stage1_checkpoint": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1/checkpoints/best.json",
+    "resume": null
+  },
+  "ip_adapter": {
+    "enabled": true,
+    "image_encoder": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+    "weights": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500/ipadapter/model.safetensors",
+    "fusion_weights": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500/ipadapter/fusion_module.safetensors",
+    "num_tokens": 4,
+    "scale": 1.0
+  },
+  "noise_fusion": {
+    "trainable": false,
+    "beta_min": 0.05,
+    "beta_max": 0.95,
+    "initial_beta": 0.5,
+    "strength": 1.0,
+    "channel_normalize": false,
+    "global_normalize": false,
+    "norm_eps": 0.00001
+  },
+  "temporal_adapter": {
+    "enabled": true,
+    "trainable": true,
+    "checkpoint": null,
+    "down_block_indices": [0, 1, 2],
+    "use_mid": true,
+    "up_block_indices": [],
+    "bottleneck_channels": 64,
+    "temporal_kernel_size": 3,
+    "dropout": 0.0,
+    "scale": 1.0
+  },
+  "loss": {
+    "noise_weight": 1.0,
+    "temporal_weight": 0.05,
+    "temporal_timestep_weighting": true,
+    "noise_stats_weight": 0.0,
+    "beta_prior_weight": 0.0,
+    "beta_target": 0.5,
+    "beta_smoothness_weight": 0.0,
+    "charbonnier_eps": 0.001
+  },
+  "trainer": {
+    "device": "cuda",
+    "max_steps": 20,
+    "batch_size": 1,
+    "valid_batch_size": 1,
+    "gradient_accumulation_steps": 1,
+    "num_workers": 2,
+    "pin_memory": true,
+    "persistent_workers": false,
+    "lr": 0.0001,
+    "min_lr": 0.00001,
+    "temporal_adapter_lr": 0.0001,
+    "temporal_adapter_min_lr": 0.00001,
+    "warmup_steps": 2,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.01,
+    "amp": true,
+    "amp_init_scale": 2048,
+    "gradient_checkpointing": true,
+    "grad_clip": 1.0,
+    "log_freq": 1,
+    "valid_freq": 20,
+    "valid_batches": 2,
+    "save_freq": 20
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "seed": 2026,
+  "output_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_condition_adapter_temporal_stage3_smoke",
+  "checkpoint_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_condition_adapter_temporal_stage3_smoke/checkpoints",
+  "data": {
+    "seed": 2026,
+    "dataset_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow",
+    "manifest": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/manifest.json",
+    "clip_length": 8,
+    "height": 512,
+    "width": 512,
+    "train_stride": 8,
+    "valid_stride": 16,
+    "caption": "",
+    "random_horizontal_flip": {
+      "train": true,
+      "valid": false,
+      "test": false
+    }
+  },
+  "model": {
+    "base_model": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "v8_checkpoint": "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning-v8/checkpoint-2000",
+    "noise_source": "fixed_stage1",
+    "stage1_checkpoint": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1/checkpoints/best.json",
+    "fixed_beta": 0.7,
+    "init_checkpoint": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_condition_adapter_fixed_beta_test2/checkpoints/best.json",
+    "resume": null
+  },
+  "ip_adapter": {
+    "enabled": true,
+    "image_encoder": "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+    "num_tokens": 4,
+    "scale": 1.0,
+    "include_base_image": true,
+    "fusion_scale": 1.0,
+    "v8_mask_order": true
+  },
+  "noise_fusion": {
+    "strength": 1.0,
+    "warp_region": "all"
+  },
+  "adapter": {
+    "input_channels": 64,
+    "bottleneck_channels": 64,
+    "use_down": true,
+    "use_mid": true,
+    "use_up": false,
+    "injection_scale": 1.0,
+    "train_stc_encoder": false,
+    "stc_lr": 0.00001
+  },
+  "temporal_adapter": {
+    "enabled": true,
+    "down_block_indices": [0, 1, 2],
+    "use_mid": true,
+    "up_block_indices": [],
+    "bottleneck_channels": 64,
+    "temporal_kernel_size": 3,
+    "dropout": 0.0,
+    "scale": 1.0,
+    "lr": 0.0001
+  },
+  "loss": {
+    "noise_weight": 1.0,
+    "temporal_weight": 0.05,
+    "temporal_timestep_weighting": true,
+    "residual_weight": 0.0001,
+    "charbonnier_eps": 0.001
+  },
+  "trainer": {
+    "device": "cuda",
+    "max_steps": 20,
+    "batch_size": 1,
+    "valid_batch_size": 1,
+    "gradient_accumulation_steps": 1,
+    "num_workers": 2,
+    "pin_memory": true,
+    "persistent_workers": false,
+    "lr": 0.00005,
+    "min_lr": 0.000005,
+    "warmup_steps": 2,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.01,
+    "amp": true,
+    "amp_init_scale": 2048,
+    "max_consecutive_amp_overflows": 16,
+    "gradient_checkpointing": true,
+    "grad_clip": 1.0,
+    "log_freq": 1,
+    "valid_freq": 20,
+    "valid_batches": 2,
+    "save_freq": 20
+  }
+}

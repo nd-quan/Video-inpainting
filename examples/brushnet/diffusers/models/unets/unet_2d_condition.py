@@ -1054,6 +1054,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
         down_block_add_samples: Optional[Tuple[torch.Tensor]] = None,
         mid_block_add_sample: Optional[Tuple[torch.Tensor]] = None,
         up_block_add_samples: Optional[Tuple[torch.Tensor]] = None,
+        temporal_adapter: Optional[nn.Module] = None,
+        temporal_num_frames: Optional[int] = None,
+        temporal_adapter_scale: float = 1.0,
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -1200,6 +1203,31 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
         #       T2I-Adapter and ControlNet both use down_block_additional_residuals arg
         #       but can only use one or the other
         is_brushnet = down_block_add_samples is not None and mid_block_add_sample is not None and up_block_add_samples is not None
+        if temporal_adapter is not None:
+            if temporal_num_frames is None or int(temporal_num_frames) <= 0:
+                raise ValueError(
+                    "temporal_num_frames must be a positive integer when "
+                    "temporal_adapter is provided"
+                )
+            temporal_num_frames = int(temporal_num_frames)
+            if sample.shape[0] % temporal_num_frames:
+                raise ValueError(
+                    f"U-Net feature batch {sample.shape[0]} is not divisible by "
+                    f"temporal_num_frames={temporal_num_frames}"
+                )
+            temporal_batch_size = sample.shape[0] // temporal_num_frames
+
+            def apply_temporal(hidden_states, stage, block_index=None):
+                return temporal_adapter(
+                    hidden_states,
+                    batch_size=temporal_batch_size,
+                    num_frames=temporal_num_frames,
+                    stage=stage,
+                    block_index=block_index,
+                    scale=temporal_adapter_scale,
+                )
+        else:
+            apply_temporal = None
         if not is_adapter and mid_block_additional_residual is None and down_block_additional_residuals is not None:
             deprecate(
                 "T2I should not use down_block_additional_residuals",
@@ -1217,7 +1245,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
         if is_brushnet:
             sample = sample + down_block_add_samples.pop(0)
 
-        for downsample_block in self.down_blocks:
+        for down_block_index, downsample_block in enumerate(self.down_blocks):
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
                 # For t2i-adapter CrossAttnDownBlock2D
                 additional_residuals = {}
@@ -1247,6 +1275,13 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
                 if is_adapter and len(down_intrablock_additional_residuals) > 0:
                     sample += down_intrablock_additional_residuals.pop(0)
 
+            if apply_temporal is not None:
+                sample = apply_temporal(sample, "down", down_block_index)
+                # The last returned state is the block output consumed by the
+                # corresponding U-Net skip. Keep it synchronized with the
+                # temporally mixed main path.
+                if res_samples and res_samples[-1].shape == sample.shape:
+                    res_samples = (*res_samples[:-1], sample)
             down_block_res_samples += res_samples
 
         if is_controlnet:
@@ -1287,6 +1322,11 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
 
         if is_brushnet:
             sample = sample + mid_block_add_sample
+
+        # Apply temporal mixing after the BrushNet middle residual has been
+        # fused so the adapter operates on the actual deployed U-Net feature.
+        if apply_temporal is not None:
+            sample = apply_temporal(sample, "mid")
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
@@ -1331,6 +1371,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin,
                     scale=lora_scale,
                     **additional_residuals,
                 )
+
+            if apply_temporal is not None:
+                sample = apply_temporal(sample, "up", i)
 
         # 6. post-process
         if self.conv_norm_out:
