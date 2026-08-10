@@ -81,3 +81,68 @@ warm start is optional and mutually exclusive with `--resume_from_checkpoint`.
 Each v3 checkpoint contains one combined `stc_flow_model` for exact training
 resume and a smaller `stc_adapter` for inference. At inference, use only
 `stc_adapter`; do not load or compute teacher/predicted flow.
+
+## Diagnose local versus global temporal inconsistency
+
+`evaluate_temporal_inconsistency.py` evaluates an already generated V2/V3
+clip tree. It does not run diffusion inference and does not use the V3 flow
+head. Instead, it uses clean-GT RAFT `teacher_b` to align the previous-frame
+restoration error into the current frame:
+
+```text
+e_t = prediction_t - clean_GT_t
+R_t = e_t - warp(e_(t-1), teacher_b_t)
+```
+
+The effective evaluation domain is the valid degraded BG in both frames. Raw
+masks remain `0=degraded BG, 255=HQ ROI`; the evaluator converts this once to
+`M_BG=1`. It erodes mask boundaries by two pixels so a hard-composite seam does
+not dominate the diagnosis.
+
+Run the current V2 validation result:
+
+```bash
+bash examples/brushnet/STC_encoder_v3_rgb_flow/run_evaluate_temporal_inconsistency.sh
+```
+
+Fast preflight or a focused BasketballPass diagnosis:
+
+```bash
+PREFLIGHT_ONLY=1 \
+bash examples/brushnet/STC_encoder_v3_rgb_flow/run_evaluate_temporal_inconsistency.sh
+
+VIDEO_FILTER=BasketballPass MAX_UNITS=1 SCALES=8,16 \
+bash examples/brushnet/STC_encoder_v3_rgb_flow/run_evaluate_temporal_inconsistency.sh
+```
+
+The default `OVERLAP_MODE=per_clip` measures only transitions produced in the
+same diffusion call. `OVERLAP_MODE=first` or `last` diagnoses the stitched
+sequence; rows whose two frames came from different calls are marked
+`window_boundary=1` because those transitions can include clip-stitching
+flicker, not only STC behavior.
+
+Outputs are written below the evaluation root:
+
+- `per_pair_metrics.csv`: every frame pair, motion, coverage, absolute error,
+  multi-scale local/coarse scores and labels.
+- `per_sequence_metrics.csv`: valid-pixel-weighted sequence summaries.
+- `summary.json`: metric contract, preflight counts and overall diagnosis.
+- `visualizations/`: worst pair per unit with prediction/GT warps, effective
+  mask, raw residual, coarse residual and local residual.
+
+Interpret the primary fields together:
+
+- `raw_temporal_rmse` is inconsistency severity in RGB `[0,1]` units.
+- `local_rmse_share` (also emitted as the compatibility alias
+  `local_frequency_share`) is
+  `local_RMSE / (local_RMSE + coarse_RMSE)`. It says whether error is mostly
+  high-frequency local (`>=0.6`), coarse/global (`<=0.4`), or mixed at the
+  selected Gaussian scale (16 pixels by default).
+- `global_dc_l1` detects coherent brightness/color drift over the whole valid
+  BG.
+- `energy_support90_fraction` and `directional_coherence` distinguish a
+  spatially localized patch from a distributed/global error.
+
+The local/global label is a scale-dependent diagnostic. A high local share can
+still describe a very small error, so it must never be reported without the
+absolute RMSE.

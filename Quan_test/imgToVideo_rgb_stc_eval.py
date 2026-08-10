@@ -25,16 +25,16 @@ from typing import DefaultDict, Dict, Iterable, List, Mapping, Sequence, Tuple
 import cv2
 
 
-# DEFAULT_EVAL_ROOT = Path(
-#     "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
-#     "eval_rgb_stc_v2/legacy_test/checkpoint-2000-sBG-1"
-# )
-
-
 DEFAULT_EVAL_ROOT = Path(
     "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
-    "eval_rgb_stc_v2/valid/checkpoint-2000-sBG-09"
+    "eval_rgb_stc_v2/legacy_test/checkpoint-2000-sTCE-0.7-sBG-1.0"
 )
+
+
+# DEFAULT_EVAL_ROOT = Path(
+#     "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
+#     "eval_rgb_stc_v2/valid/checkpoint-2000-sBG-09"
+# )
 DEFAULT_FRAME_KINDS = ("final",)
 FRAME_KINDS = ("final", "raw", "input", "gt", "mask_roi")
 DEFAULT_SEQUENCE_FPS = {
