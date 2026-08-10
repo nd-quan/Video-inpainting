@@ -436,6 +436,191 @@ class HierarchicalV8ClipDataset(Dataset):
         return sample
 
 
+class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
+    """Read the legacy per-sequence BrushNet test layout.
+
+    Expected layout::
+
+        root/<sequence>/gt/<frame>.png
+        root/<sequence>/inputs/<frame>.png
+        root/<sequence>/masks/<frame>.png
+
+    Unlike :class:`HierarchicalV8ClipDataset`, this source tree may contain
+    clean GT reference frames that have no corresponding degraded input/mask
+    (for example the tail of ParkScene).  Such frames cannot be sampled and
+    are reported in ``ignored_gt_frame_count``; any input/mask mismatch is an
+    error.  Source masks retain the shared V8 convention ``0=BG, 255=ROI``.
+    """
+
+    _SOURCE_KINDS = {"GT": "gt", "input": "inputs", "mask": "masks"}
+
+    def __init__(
+        self,
+        dataset_root,
+        split: str,
+        tokenizer,
+        clip_image_processor,
+        clip_length: int = 4,
+        stride: int = 1,
+        resolution: int = 512,
+    ):
+        self.dataset_root = Path(dataset_root).expanduser().resolve()
+        self.split = str(split)
+        self.split_root = self.dataset_root
+        self.clip_length = int(clip_length)
+        self.stride = int(stride)
+        self.resolution = int(resolution)
+        self.clip_image_processor = clip_image_processor
+        if self.clip_length < 2:
+            raise ValueError("clip_length must be at least 2 for shared noise")
+        if self.stride <= 0:
+            raise ValueError("clip stride must be positive")
+        if self.resolution <= 0:
+            raise ValueError("resolution must be positive")
+        if not self.dataset_root.is_dir():
+            raise FileNotFoundError(
+                f"Flat test dataset directory not found: {self.dataset_root}"
+            )
+
+        branches: Dict[Path, List[Tuple[int, Path]]] = {}
+        gt_frame_count = 0
+        aligned_frame_count = 0
+        for sequence_root in sorted(
+            (path for path in self.dataset_root.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+        ):
+            kind_roots = {
+                kind: sequence_root / source_kind
+                for kind, source_kind in self._SOURCE_KINDS.items()
+            }
+            missing_roots = [
+                str(root) for root in kind_roots.values() if not root.is_dir()
+            ]
+            if missing_roots:
+                # Some legacy trees also carry a ``video`` folder.  Ignore it,
+                # but reject a nominal sequence that is only partially formed.
+                if any(root.is_dir() for root in kind_roots.values()):
+                    raise FileNotFoundError(
+                        "Flat test sequence must contain gt, inputs, and masks: "
+                        f"{sequence_root}; missing={missing_roots}"
+                    )
+                continue
+
+            files = {
+                kind: {path.name: path for path in root.glob("*.png") if path.is_file()}
+                for kind, root in kind_roots.items()
+            }
+            gt_names = set(files["GT"])
+            input_names = set(files["input"])
+            mask_names = set(files["mask"])
+            if input_names != mask_names:
+                missing_input = sorted(mask_names - input_names)
+                missing_mask = sorted(input_names - mask_names)
+                raise ValueError(
+                    f"inputs/masks are not aligned in {sequence_root}: "
+                    f"missing_input={len(missing_input)}, "
+                    f"missing_mask={len(missing_mask)}, "
+                    f"first_missing_input={missing_input[:1]}, "
+                    f"first_missing_mask={missing_mask[:1]}"
+                )
+            input_without_gt = sorted(input_names - gt_names)
+            if input_without_gt:
+                raise ValueError(
+                    f"inputs/masks contain frames without GT in {sequence_root}: "
+                    f"count={len(input_without_gt)}, "
+                    f"first={input_without_gt[:1]}"
+                )
+
+            usable_names = sorted(gt_names & input_names)
+            if not usable_names:
+                raise ValueError(
+                    f"No aligned gt/input/mask PNG frames found in {sequence_root}"
+                )
+            gt_frame_count += len(gt_names)
+            aligned_frame_count += len(usable_names)
+            branch = Path(sequence_root.name)
+            indexed_paths = []
+            for filename in usable_names:
+                relative_path = branch / filename
+                try:
+                    frame_index = int(relative_path.stem)
+                except ValueError as error:
+                    raise ValueError(
+                        f"Frame filename must have a numeric stem: {relative_path}"
+                    ) from error
+                indexed_paths.append((frame_index, relative_path))
+            if len({frame for frame, _ in indexed_paths}) != len(indexed_paths):
+                raise ValueError(f"Duplicate numeric frame id in branch {branch}")
+            branches[branch] = indexed_paths
+
+        if not branches:
+            raise ValueError(
+                f"No valid flat test sequences found below {self.dataset_root}"
+            )
+
+        self.clips: List[Tuple[str, Tuple[Path, ...], Tuple[int, ...]]] = []
+        covered_files = set()
+        for branch in sorted(branches, key=lambda path: path.as_posix()):
+            frames = sorted(branches[branch], key=lambda item: item[0])
+            runs: List[List[Tuple[int, Path]]] = []
+            current_run: List[Tuple[int, Path]] = []
+            for frame in frames:
+                if current_run and frame[0] != current_run[-1][0] + 1:
+                    runs.append(current_run)
+                    current_run = []
+                current_run.append(frame)
+            if current_run:
+                runs.append(current_run)
+
+            for run in runs:
+                last_start = len(run) - self.clip_length
+                starts = list(range(0, last_start + 1, self.stride))
+                # Evaluation should score every source frame. Retain the
+                # requested stride, then append the final window when stride
+                # does not land exactly on it; this only adds a tail overlap.
+                if starts[-1] != last_start:
+                    starts.append(last_start)
+                for start in starts:
+                    clip = run[start : start + self.clip_length]
+                    paths = tuple(item[1] for item in clip)
+                    frame_indices = tuple(item[0] for item in clip)
+                    self.clips.append((branch.as_posix(), paths, frame_indices))
+                    covered_files.update(paths)
+
+        if not self.clips:
+            raise ValueError(
+                f"No length-{self.clip_length} clips found below {self.dataset_root}"
+            )
+        self.frame_count = aligned_frame_count
+        self.total_gt_frame_count = gt_frame_count
+        self.ignored_gt_frame_count = gt_frame_count - aligned_frame_count
+        self.covered_frame_count = len(covered_files)
+        self.branch_count = len(branches)
+        self.roots = {}
+
+        tokenized = tokenizer(
+            "",
+            max_length=tokenizer.model_max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids
+        self.empty_input_ids = tokenized[0].detach().clone()
+
+        resampling = getattr(Image, "Resampling", Image)
+        self._rgb_resample = resampling.BILINEAR
+        self._mask_resample = resampling.NEAREST
+
+    def _load_images(self, relative_paths: Tuple[Path, ...], kind: str, mode: str):
+        images = []
+        source_kind = self._SOURCE_KINDS[kind]
+        for relative_path in relative_paths:
+            path = self.dataset_root / relative_path.parent / source_kind / relative_path.name
+            with Image.open(path) as image:
+                images.append(image.convert(mode).copy())
+        return images
+
+
 class SharedNoiseClipDataset(Dataset):
     """Group a frame dataset into clips without crossing manifest videos.
 

@@ -21,7 +21,7 @@ from torchmetrics.functional import (
 import lpips
 
 
-FFMPEG_EXE = "/usr/bin/ffmpeg"
+FFMPEG_EXE = "ffmpeg"
 FVD_METRIC_ROOT = (
     Path(__file__).resolve().parents[0] / "PyTorch-Frechet-Video-Distance"
 )
@@ -561,11 +561,11 @@ FVD:      {results['FVD']:.4f}
 if __name__ == "__main__":
 
     # REF_VIDEO = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/BasketballPass_512_backup/video/BasketballPass_gt.mp4"
-    REF_VIDEO = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/video/gt_3s.mp4"
+    REF_VIDEO = "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene/video/gt_3s.mp4"
 
-    DIST_VIDEO = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_video/PartyScene/finetuning/flowCompletion_v1.mp4"
+    DIST_VIDEO = "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/Generated_image/PartyScene/tmpGuidance/video/output.mp4"
 
-    OUTPUT_TXT = "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/metric/PartyScene_flowCompletion_v1.txt"
+    OUTPUT_TXT = "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/eval_metrics/PartyScene_finetune_sharednoise.txt"
 
     compute_video_metrics_mp4(
         ref_video=REF_VIDEO,

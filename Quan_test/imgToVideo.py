@@ -1,25 +1,40 @@
 import argparse
 import subprocess
 from pathlib import Path
-
+import os
+import cv2
 
 DEFAULT_DATASET_ROOT = Path(
-    "/media/ssd1/ndquan/NAS_ndq/model_base/videoInpainting/Datasets/SFU"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/Generated_image"
 )
 
+# CASES = {
+#     "BasketballDrill_832x480_50_roi18_bg52": 50,
+#     "BlowingBubbles_416x240_50_roi18_bg52": 50,
+#     "BQSquare_416x240_60_roi18_bg52": 60,
+#     "FourPeople_1280x720_60_roi18_bg52": 60,
+# }
+
+
 CASES = {
-    "BasketballDrill_832x480_50_roi18_bg52": 50,
-    "BlowingBubbles_416x240_50_roi18_bg52": 50,
-    "BQSquare_416x240_60_roi18_bg52": 60,
-    "FourPeople_1280x720_60_roi18_bg52": 60,
+    "BasketballPass": 50,
+    # "PartyScene": 50,
+    # "ParkScene": 24,
+    # "Traffic": 30,
 }
 
+DEFAULT_FRAME_FOLDERS = ("sharedNoise_new_checkpoint2000_09_corr",)
 
-def frameToVideo(img_dir, vid_output_path, fps=50):
+
+def frameToVideo(img_dir, vid_output_path, fps=50, codec="png"):
     """Convert sequential PNG frames (000000.png, ...) to an MP4 video."""
     img_dir = Path(img_dir)
     vid_output_path = Path(vid_output_path)
     img_files = sorted(img_dir.glob("*.png"))
+
+    first_img_path = os.path.join(img_dir, img_files[0])
+    frame = cv2.imread(first_img_path)
+    height, width = frame.shape[:2]
 
     if not img_files:
         raise FileNotFoundError(f"No PNG frames found in: {img_dir}")
@@ -33,30 +48,22 @@ def frameToVideo(img_dir, vid_output_path, fps=50):
         )
 
     vid_output_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-v", "error",
-            "-y",
-            "-framerate", str(fps),
-            "-start_number", "0",
-            "-i", str(img_dir / "%06d.png"),
-            "-frames:v", str(len(img_files)),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            str(vid_output_path),
-        ],
-        check=True,
-    )
-    print(
-        f"Saved {vid_output_path} "
-        f"({len(img_files)} frames, {fps} FPS)"
-    )
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for .mp4
 
+    video = cv2.VideoWriter(str(vid_output_path), fourcc, fps, (width, height))  # fps
+
+    for img_file in img_files:
+        img_path = os.path.join(img_dir, img_file)
+        frame = cv2.imread(img_path)
+        video.write(frame)
+
+    video.release()
+    print(f"Video saved to {vid_output_path}")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert GT and input frame folders to videos."
+        description="Convert frame folders to videos."
     )
     parser.add_argument(
         "--dataset-root",
@@ -71,13 +78,31 @@ def main():
         default=list(CASES),
         help="Cases to process (default: all four cases).",
     )
+    parser.add_argument(
+        "--frame-folders",
+        nargs="+",
+        default=list(DEFAULT_FRAME_FOLDERS),
+        help=(
+            "Frame folders inside each case "
+            "(default: tmpGuidance)."
+        ),
+    )
+    parser.add_argument(
+        "--codec",
+        choices=("png", "mpeg4"),
+        default="png",
+        help=(
+            "png preserves every RGB pixel but creates larger MP4 files; "
+            "mpeg4 is smaller and more compatible but remains lossy."
+        ),
+    )
     args = parser.parse_args()
 
     # Validate all sources before producing partial output.
     missing = [
         args.dataset_root / case_name / frame_type
         for case_name in args.cases
-        for frame_type in ("GT", "input")
+        for frame_type in args.frame_folders
         if not (args.dataset_root / case_name / frame_type).is_dir()
     ]
     if missing:
@@ -87,10 +112,16 @@ def main():
 
     for case_name in args.cases:
         case_dir = args.dataset_root / case_name
-        video_dir = case_dir / "video"
         fps = CASES[case_name]
-        frameToVideo(case_dir / "GT", video_dir / "gt.mp4", fps)
-        frameToVideo(case_dir / "input", video_dir / "input.mp4", fps)
+        for frame_folder in args.frame_folders:
+            frame_dir = case_dir / frame_folder
+            video_dir = frame_dir / "video"
+            frameToVideo(
+                frame_dir,
+                video_dir / "output.mp4",
+                fps,
+                codec=args.codec,
+            )
 
 
 if __name__ == "__main__":

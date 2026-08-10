@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from diffusers import DDIMScheduler
 from diffusers.models.brushnet import BrushNetModel
-from diffusers.pipelines.brushnet.pipeline_brushnet_sharedNoise_sameBG_v0_0 import (
+from diffusers.pipelines.brushnet.pipeline_sharedNoiseBG_org import (
     StableDiffusionBrushNetPipeline,
 )
 from ip_adapter import FusionIPAdapter
@@ -28,29 +28,25 @@ from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
 
 DEFAULT_BASE_MODEL = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
     "base_model/stable-diffusion-v1-5/stable-diffusion-v1-5"
 )
 DEFAULT_CHECKPOINT_DIR = (
-    "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_brushnet/train_sharedNoise_sameBG_0.9/checkpoint-2000"
 )
-# DEFAULT_IMAGE_DIR = (
-#     "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/"
-#     "dataset/test/BasketballPass_512_backup/inputs"
-# )
 
 DEFAULT_IMAGE_DIR = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
-    "dataset/test/ParkScene/inputs"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
+    "dataset/test/BasketballPass/inputs"
 )
 
 DEFAULT_MASK_DIR = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
-    "dataset/test/ParkScene/masks"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
+    "dataset/test/BasketballPass/masks"
 )
 DEFAULT_OUTPUT_DIR = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/"
-    "Generated_image/ParkScene/new/fixedBG_nulltext_checkpoint3500_09_corr"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
+    "Generated_image/BasketballPass/sharedNoise_new_checkpoint2000_09_corr"
 )
 DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 
@@ -75,7 +71,7 @@ def parse_args():
     parser.add_argument("--ip_scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--shared_bg_seed", type=int, default=6789)
-    parser.add_argument("--shared_bg_noise_strength", type=float, default=1.0)
+    parser.add_argument("--shared_bg_noise_strength", type=float, default=0.9)
     parser.add_argument("--prompt", default="", help="Default is null text.")
     parser.add_argument("--negative_prompt", default="", help="Default is null negative text.")
     parser.add_argument("--no_blend", action="store_true")

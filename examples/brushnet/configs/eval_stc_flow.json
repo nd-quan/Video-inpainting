@@ -1,0 +1,30 @@
+{
+  "seed": 2026,
+
+  "model": {
+    "base_model": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5"
+  },
+
+  "data": {
+    "dataset_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow",
+    "manifest": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/manifest.json",
+    "teacher_flow_root": "/home/cilab/ndquan/videoInpainting/SFU_STC_flow/teacher_flows_512x512",
+
+    "clip_length": 8,
+    "height": 512,
+    "width": 512,
+
+    "train_stride": 1,
+    "valid_stride": 8,
+
+    "validate_files": true
+  },
+
+  "loss": {
+    "teacher_weight": 1.0,
+    "fb_weight": 0.1,
+    "smoothness_weight": 0.01,
+    "charbonnier_eps": 0.001,
+    "smoothness_edge_weight": 10.0
+  }
+}

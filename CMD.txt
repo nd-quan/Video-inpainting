@@ -1,0 +1,75 @@
+pwd: check the current folder
+ls -l (or ls): check folder
+ls -l + path/folder: check files 
+conda env list: check list
+
+stat file_name : check history file
+
+
+-- ssh ndquan@223.195.240.65 -p 1004
+
+-- Mount from NAS server to local machine or workstation
+sshfs ndquan@223.195.240.67:/ndquan/GGDR -p 1004 NAS_ndq
+
+-- Mount NAS to VCM
+sshfs 223.195.240.67:/ndquan ~/ndquan/NAS_ndq
+
+sshfs ndquan@223.195.240.67:/ ~/ndquan/NAS_ndq \
+  -p 1004 \
+  -o ProxyJump=none,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3
+
+
+-- Copy file/folder from this server to another server
+Step1: add private key into SSH agent: ssh-add C:\Users\Quandgu\.ssh\id_ed25519 (private key file of source server) 
+Step2: allow server to use that SSH agent: ssh -A -p 1004 ndquan@223.195.240.69
+Step3: use that key to connect another server and send file/folder: 	rsync -avP -e "ssh -p 1004" \
+									/media/ssd2/naeun/For_quan/checkpoint/checkpoint-200000 \
+									ndquan@223.195.240.65:/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_naeun
+
+-- Check ssh agent: ssh-add -l
+
+CUDA_DEVICE_ORDER="PCI_BUS_ID" CUDA_VISIBLE_DEVICES="" file.py
+
+- open a terminal on local: ssh -L XXX:129.254.222.145:410 -i ~/.ssh/SSH_KEY_FILE USER_NAME@223.195.240.64 -p 1004. where XXX is a number for example 10004, replace your USER_NAME and SSH_KEY_FILE
+- open vscode, connect to localhost:XXX where XXX is the number above
+- enter vcm workstation password and it is done
+
+=>>>>> A TERMINAL ON LOCAL TO ACCESS VCM: ssh -L 5005:129.254.222.145:410 -i ~/.ssh/id_ed25519_ws05 ndquan@223.195.240.64 -p 1004
+
+IP: 129.254.222.145
+SSH Port Number: 410
+Account: cilab
+Password: ehdrnrcilab
+
+In terminal
+ssh -p 410 cilab@129.254.222.145
+cilab@129.254.222.145's password: ehdrnrcilab
+
+** Send file from another ws to current ws
+rsync -ah \
+  --info=progress2 \
+  --partial \
+  -e 'ssh -p 1004' \
+  ndquan@223.195.240.65:/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning-v8/checkpoint-2000 \
+  ~/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_brushnet/checkpoint_naeun/checkpoint-200000
+
+
+
+
+**Check gpu realtime
+watch -n 1 nvidia-smi
+
+** check cpu real time
+htop
+
+** create tmux
+tmux new -s <name>
+
+** open available tmux
+tmux attach -t "name"
+
+tensorboard   --logdir /home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1/tensorboard   --port 6006
+
+date -d @1785913405 (check the timestep of tensorboard)
+
+

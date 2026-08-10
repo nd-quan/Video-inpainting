@@ -45,35 +45,20 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cudnn.deterministic = True
 device = "cuda"
 
-# 설정
-# image_dir = "/home/gpu_01/nas_naeun/data/data/test_in_COCO" # coco
-# image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512/images' # open
-# image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/images' # open
-# image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/images' # open  
-# image_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/inputs' # open  
-# image_dir='/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/Traffic/inputs'
 image_dir = os.environ.get(
     "IMAGE_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/inputs",
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/BasketballPass/inputs",
 )
 
 
-# image_dir="/media/ssd2/naeun/NAS_NE/data/data/New/synthesis_COCO"
-
-# mask_dir = "/home/gpu_01/nas_naeun/data/data/test_mask_COCO" # coco
-# mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/masks' # open
-# mask_dir='/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/brushnet/dataset/test/RaceHorses_512_backup/masks' # open
 mask_dir = os.environ.get(
     "MASK_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/PartyScene_512_backup/masks",
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/BasketballPass/masks",
 )
 
-# output_dir = "/media/hdd/naeun/save/BrushNet_200000"
-# output_dir = "/media/hdd/naeun/save/test_with_originalcaption/Brushnet_200000"
-# output_dir='/media/hdd/naeun/save/Opendataset/BrushNet_300000'
 output_dir = os.environ.get(
     "OUTPUT_DIR",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/gen_image/PartyScene/finetuning_ckpt2000_new/sharedNoise_fixedBG_1_temporal_v0_L2",
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/Generated_image/BasketballPass/tmpGuidance",
 )
 # test 15는 14에서 그냥 copy&paste
 # test 16은 blending을 반대로 
@@ -83,19 +68,13 @@ if not os.path.exists(output_dir):
 # base_model_path = "lambdalabs/miniSD-diffusers"
 base_model_path = os.environ.get(
     "BASE_MODEL_PATH",
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5",
 )
-# brushnet_path = "/media/hdd/naeun/save/checkpoint/Checkpoint_brushNet_200000"
-# brushnet_path="/media/ssd2/naeun/ws04/BrushNet_previous/examples/brushnet/pretrained_brushnet/brushnet"
-# brushnet_path="/media/ssd2/naeun/NAS_NE/checkpoint/Checkpoint_brushnet_512/checkpoint-600000/brushnet"
-# brushnet_path="/home/gpu_01/naeun/v8/checkpoint-300000/brushnet"
 
-
-# brushnet_path="/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_naeun/checkpoint-200000/brushnet"
 
 checkpoint_dir = os.environ.get(
     "CHECKPOINT_DIR",
-    "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500",
+    "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/train_sharedNoise_sameBG_v0_0/checkpoint-2500",
 )
 
 brushnet_path = f"{checkpoint_dir}/brushnet"
