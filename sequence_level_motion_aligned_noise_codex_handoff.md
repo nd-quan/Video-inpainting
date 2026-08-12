@@ -1,5 +1,12 @@
 # Codex Handoff: Sequence-Level Motion-Aligned Noise Propagation for STC-v2
 
+> **Canonical-design notice:** The detailed STC-v2++ specification is
+> `stc_v2pp_hard_matching_and_deformation_head_design.md`. This handoff is kept
+> as the shorter workflow summary. Its core contracts are synchronized with the
+> canonical design: Deformation Head first, full-frame warp by default, separate
+> lineage/final-noise state, and the existing `sqrt(alpha)` /
+> `sqrt(1-alpha)` variance-preserving fusion law.
+
 ## 1. Purpose
 
 Implement and evaluate a sequence-level noise initialization mechanism for video restoration in the VCM setting.
@@ -47,7 +54,8 @@ The key distinction is:
 - Add a sequence-scoped noise state.
 - Reuse exactly the stored noise for overlapping frames.
 - Derive local correspondence from frozen STC-v2 features without teacher optical flow.
-- Transport background noise only where correspondence is valid.
+- Transport lineage noise over the full latent frame where correspondence is
+  valid. Keep background-only transport as an explicit ablation.
 - Fill newly visible or invalid regions with deterministic fresh Gaussian noise.
 - Correct or preserve noise statistics after interpolation/transport.
 - Keep the existing shared-noise path available as a baseline through configuration.
@@ -64,9 +72,29 @@ The key distinction is:
 
 ## 5. Recommended development strategy
 
-Implement the idea in two milestones. Do not begin with a frozen random `Conv2D(C, 2)` head, because its output has no reason to represent useful motion.
+Implement the idea in two variants. The approved implementation order is the
+trainable Deformation Head first, followed by Hard Matching as a non-parametric
+comparison. Do not use a frozen random `Conv2D(C, 2)` head, because its output
+has no reason to represent useful motion.
 
-### Milestone 1 — Training-free STC feature transport
+### Variant A — Task-trained NoiseDeformationHead
+
+Use an ordered adjacent pair of frozen STC-v2 features to predict a bounded
+backward sampling offset:
+
+\[
+\Delta_{t\leftarrow r}
+=
+D_{\mathrm{offset}}
+\left([h_r,h_t,h_t-h_r]\right).
+\]
+
+The final layer is zero-initialized, so training starts from identity transport.
+Train the head with detached-feature cosine matching, edge-aware offset
+smoothness, and the restoration diffusion objective. Call its output a `noise
+deformation field` or `noise transport offset`, not optical flow.
+
+### Variant B — Training-free hard STC feature transport
 
 Use STC-v2 feature similarity to estimate local correspondence between a reference frame and a target frame.
 
@@ -79,27 +107,15 @@ S_t(q,p)
 {\|h_t(q)\|\,\|h_r(p)\|}.
 \]
 
-Search only in a configurable local window around each target location. Convert similarity to either:
-
-- hard correspondence with `argmax`, useful for preserving Gaussian statistics; or
-- soft correspondence with `softmax(S/temperature)`, followed by variance correction.
+Search only in a configurable local window around each target location. Use
+hard `argmax` correspondence plus confidence/mutual-consistency rejection. Soft
+weighted matching is not part of the first hard-matching comparison because it
+mixes multiple reference noise values.
 
 Use the correspondence to sample reference noise at the target locations.
 
-This milestone tests the central hypothesis without adding a trainable flow/offset predictor.
-
-### Milestone 2 — Optional task-driven deformation head
-
-Only if Milestone 1 is promising, add a lightweight head defined relative to a reference frame:
-
-\[
-\Delta_{t\leftarrow r}
-=
-D_{\mathrm{offset}}
-\left([h_r,h_t,h_t-h_r]\right).
-\]
-
-The head may be trained using restoration/temporal objectives without teacher optical flow. Call its output a `noise deformation field` or `noise transport offset`, not optical flow.
+This variant tests a discrete training-free correspondence mechanism against the
+learned deformation head.
 
 ## 6. Sequence-level state contract
 
@@ -111,19 +127,22 @@ class SequenceNoiseState:
     sequence_id: str
     seed: int
     anchor_frame_id: int
-    frame_noise: dict[int, torch.Tensor]
+    lineage_noise: dict[int, torch.Tensor]
+    final_noise: dict[int, torch.Tensor]
 ```
 
 Required behavior:
 
 1. Initialize the state once at the beginning of a sequence.
 2. Sample exactly one Gaussian anchor noise for the first sequence frame.
-3. Cache every produced frame noise by absolute frame ID.
+3. Cache both the normalized lineage and final fused noise by absolute frame ID.
 4. For a new clip, load cached noise for all overlap frames.
 5. Select one cached overlap frame as the local reference for unseen frames.
 6. Never resample noise for an already cached frame.
 7. Clear the state only when the sequence ends or `sequence_id` changes.
 8. Make fresh-noise generation deterministic from `(sequence_seed, frame_id)`.
+9. Recurrently transport `lineage_noise`, never `final_noise`; otherwise the
+   anchor coefficient decays by another `sqrt(alpha)` at each transition.
 
 Example with `clip_length=8`, `stride=6`:
 
@@ -141,7 +160,7 @@ Codex must record the actual repository shapes before implementation. The expect
 
 ```python
 stc_features: [B, T, C, Hs, Ws]
-latent_bg_mask: [B, T, 1, Hl, Wl]
+latent_bg_mask: [B, T, 1, Hl, Wl]  # used by the bg-only ablation
 frame_ids: [B, T]  # absolute indices within each sequence
 noise: [B, T, Cl, Hl, Wl]
 ```
@@ -160,7 +179,8 @@ Keep feature matching and sequence-state management separate from the diffusion 
 
 ## 8. Noise construction
 
-For target frame \(t\), let \(V_t\) be a valid, in-bound, background-to-background transport mask. Construct:
+For target frame \(t\), let \(V_t\) be the valid in-bound transport mask over
+the full latent frame. Construct the lineage:
 
 \[
 \epsilon_t
@@ -177,19 +197,36 @@ where:
 - \(\epsilon_r\) is cached reference noise;
 - \(\eta_t\sim\mathcal N(0,I)\) is deterministic fresh noise for invalid/new regions;
 - `Norm` corrects interpolation-induced changes in mean or variance;
-- ROI noise behavior must remain identical to the existing pipeline unless explicitly configured otherwise.
+- the primary `warp_scope=full` path does not gate transport with `M_BG`.
 
 When mixing transported and independent noise, use a variance-preserving parameterization:
 
 \[
 \epsilon_t^{\mathrm{mix}}
 =
-\alpha\epsilon_t^{\mathrm{transport}}
+\sqrt{\alpha}\,\epsilon_t^{\mathrm{transport}}
 +
-\sqrt{1-\alpha^2}\epsilon_t^{\mathrm{ind}}.
+\sqrt{1-\alpha}\,\epsilon_t^{\mathrm{ind}},
+\qquad \alpha\in[0,1].
 \]
 
-Do not use `alpha * transported + (1-alpha) * independent` unless the resulting variance change is intentional and documented.
+This is exactly the existing shared-noise law: `alpha` is the target correlated
+variance fraction. Do not substitute either
+`alpha * transported + sqrt(1-alpha**2) * independent` or linear interpolation.
+
+The primary experiment applies this noise to the complete latent frame:
+
+\[
+\epsilon_t^{used}=\epsilon_t^{mix}.
+\]
+
+The matched background-only ablation is:
+
+\[
+\epsilon_t^{used}
+=M_{BG,t}\odot\epsilon_t^{mix}
++(1-M_{BG,t})\odot\epsilon_t^{ind}.
+\]
 
 ## 9. Configuration
 
@@ -197,16 +234,17 @@ Add configuration without breaking old checkpoints or commands. Suggested option
 
 ```text
 noise_mode:
-  independent | shared_bg | stc_feature_transport
+  independent | shared_bg | stc_deformation | stc_hard_match
 
 sequence_noise_seed: int
-transport_reference: first_overlap | last_overlap
-transport_match_mode: hard | soft
+transport_reference: previous_adjacent
+warp_scope: full | bg
+max_displacement: float
 transport_window_radius: int
-transport_temperature: float
-transport_mix_strength: float
+transport_alpha: float
 transport_variance_correction: bool
 transport_detach_stc_features: bool
+transport_final_global_normalization: false
 transport_debug_dir: optional path
 ```
 
@@ -232,7 +270,7 @@ No implementation plan is final until these facts are mapped to concrete files a
 ## 11. Safety and compatibility constraints
 
 - Do not silently change the existing shared-noise baseline.
-- Do not modify STC-v3 or introduce teacher-flow dependencies in Milestone 1.
+- Do not modify STC-v3 or introduce teacher-flow dependencies.
 - Do not mix state between different `sequence_id` values in the same batch.
 - Do not rely on clip order unless the sampler explicitly guarantees sequential clips.
 - Training dataloaders that shuffle independent clips cannot use persistent cross-clip state without a sequence-aware sampler.
@@ -293,19 +331,20 @@ Stop and report before editing if any of these are unknown:
 - mask polarity;
 - actual shared-noise integration point.
 
-### Milestone 1 complete when
+### Deformation-head workflow complete when
 
-- the training-free transport path is config-gated;
+- the trainable deformation path is config-gated;
 - the old shared-noise path is unchanged;
 - overlap reuse is exact;
 - deterministic and statistics tests pass;
+- deformation/matching/smoothness gradient tests pass;
 - a two-clip inference dry run completes and saves diagnostics.
 
-### Milestone 2 complete when
+### Hard-matching workflow complete when
 
-- the deformation head is explicitly reference-target conditioned;
-- its training objective and frozen/trainable components are documented;
-- comparison against Milestone 1 uses matched seeds and settings.
+- local matching and rejection are deterministic;
+- it has no trainable correspondence parameters;
+- comparison against the deformation head uses matched seeds and settings.
 
 ## 14. Suggested `AGENTS.md` addition
 
@@ -314,10 +353,10 @@ Keep repository-wide agent instructions short and point to this document:
 ```markdown
 ## STC-v2 sequence-noise work
 
-- Before modifying STC-v2, shared-noise initialization, or clip inference, read `docs/sequence_level_motion_aligned_noise_codex_handoff.md`.
+- Before modifying STC-v2, shared-noise initialization, or clip inference, read `sequence_level_motion_aligned_noise_codex_handoff.md` and `stc_v2pp_hard_matching_and_deformation_head_design.md`.
 - Preserve the current `shared_bg` behavior as the default baseline.
 - Verify tensor shapes, mask polarity, sequence IDs, and clip ordering from code before implementing transport.
-- Implement and validate one milestone at a time; do not introduce STC-v3 teacher-flow dependencies into Milestone 1.
+- Implement and validate one variant at a time; do not introduce STC-v3 teacher-flow dependencies.
 ```
 
 ## 15. Starter prompt for Codex — inspection only
@@ -332,7 +371,7 @@ Map the ten inspection questions in Section 10 to exact file paths, classes, fun
 Return:
 1. an evidence-backed code map;
 2. risks or mismatches between the spec and current code;
-3. a file-by-file Milestone 1 plan;
+3. a file-by-file Deformation-Head plan;
 4. exact commands for unit tests and a two-clip inference dry run.
 
 Stop after the plan and wait for approval before implementing.
@@ -341,18 +380,22 @@ Stop after the plan and wait for approval before implementing.
 ## 16. Starter prompt for Codex — implementation after inspection approval
 
 ```text
-Implement Milestone 1 from docs/sequence_level_motion_aligned_noise_codex_handoff.md using the approved code map.
+Implement Phase D1 of the NoiseDeformationHead workflow from
+stc_v2pp_hard_matching_and_deformation_head_design.md using the approved code
+map.
 
 Constraints:
 - preserve current behavior by default;
 - do not touch STC-v3 or add teacher-flow dependencies;
 - keep sequence state separate per sequence ID;
 - reuse overlap-frame noise exactly;
-- use frozen STC-v2 features for local feature matching;
+- predict bounded backward offsets from ordered adjacent frozen STC-v2 features;
 - use deterministic fresh Gaussian noise for invalid/new regions;
+- use full-frame warp by default and keep `warp_scope=bg` only as an ablation;
+- use `sqrt(alpha)` / `sqrt(1-alpha)` fusion;
 - add variance/statistics diagnostics;
 - add focused unit and integration tests;
-- do not start Milestone 2.
+- do not start Hard Matching.
 
 Run the approved checks, review the diff, and report changed files, test results, remaining risks, and the command for a short matched-seed comparison against `shared_bg`.
 ```
@@ -371,4 +414,5 @@ Preferred implementation terms:
 - `noise transport correspondence`
 - `noise deformation field` for the optional learned head
 
-Avoid calling Milestone 1 correspondence or Milestone 2 offsets optical flow unless they are explicitly supervised and evaluated as optical flow.
+Avoid calling hard-matching correspondence or Deformation-Head offsets optical
+flow unless they are explicitly supervised and evaluated as optical flow.

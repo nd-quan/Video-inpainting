@@ -15,7 +15,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -249,6 +249,7 @@ class HierarchicalV8ClipDataset(Dataset):
         clip_length: int = 4,
         stride: int = 1,
         resolution: int = 512,
+        include_branches: Optional[Sequence[str]] = None,
     ):
         self.dataset_root = Path(dataset_root).expanduser().resolve()
         self.split = str(split)
@@ -257,6 +258,7 @@ class HierarchicalV8ClipDataset(Dataset):
         self.stride = int(stride)
         self.resolution = int(resolution)
         self.clip_image_processor = clip_image_processor
+        self.include_branches = self._normalize_include_branches(include_branches)
         if self.clip_length < 2:
             raise ValueError("clip_length must be at least 2 for shared noise")
         if self.stride <= 0:
@@ -281,6 +283,27 @@ class HierarchicalV8ClipDataset(Dataset):
             }
             for kind, root in self.roots.items()
         }
+        if self.include_branches:
+            available_branches = {
+                path.parent.as_posix() for path in relative_files["GT"]
+            }
+            missing_branches = sorted(
+                set(self.include_branches) - available_branches
+            )
+            if missing_branches:
+                raise FileNotFoundError(
+                    "Requested hierarchical sequence branches were not found in "
+                    f"{self.roots['GT']}: {missing_branches}"
+                )
+            selected_branches = set(self.include_branches)
+            relative_files = {
+                kind: {
+                    path
+                    for path in files
+                    if path.parent.as_posix() in selected_branches
+                }
+                for kind, files in relative_files.items()
+            }
         gt_files = relative_files["GT"]
         if not gt_files:
             raise ValueError(f"No PNG frames found below {self.roots['GT']}")
@@ -353,6 +376,31 @@ class HierarchicalV8ClipDataset(Dataset):
         resampling = getattr(Image, "Resampling", Image)
         self._rgb_resample = resampling.BILINEAR
         self._mask_resample = resampling.NEAREST
+
+    @staticmethod
+    def _normalize_include_branches(
+        include_branches: Optional[Sequence[str]],
+    ) -> Tuple[str, ...]:
+        """Validate optional ``Class/sequence`` filters for hierarchical data."""
+        if not include_branches:
+            return ()
+        normalized = []
+        for raw_branch in include_branches:
+            branch = Path(str(raw_branch).strip())
+            if (
+                not str(raw_branch).strip()
+                or branch.is_absolute()
+                or branch == Path(".")
+                or ".." in branch.parts
+            ):
+                raise ValueError(
+                    "include_branches entries must be relative Class/sequence "
+                    f"paths, got {raw_branch!r}"
+                )
+            normalized.append(branch.as_posix())
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("include_branches must not contain duplicates")
+        return tuple(normalized)
 
     def __len__(self) -> int:
         return len(self.clips)

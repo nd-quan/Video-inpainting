@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 
 
 BRUSHNET_DIR = Path(__file__).resolve().parent.parent
@@ -16,6 +18,10 @@ if str(BRUSHNET_DIR) not in sys.path:
 from STC_encoder_v2_rgb.rgb_stc_adapter import (  # noqa: E402
     RGBSTCConditionAdapter,
     augment_brushnet_condition,
+)
+from STC_encoder_v2_rgb.evaluate_rgb_stc_shared_noise import (  # noqa: E402
+    blurred_composite,
+    composite_images,
 )
 
 
@@ -177,6 +183,49 @@ class RGBSTCConditionAdapterTests(unittest.TestCase):
                 torch.randn(1, 2, 3, 31, 32),
                 torch.ones(1, 2, 1, 31, 32),
             )
+
+
+class ROICompositeTests(unittest.TestCase):
+    @staticmethod
+    def solid_image(value: int, height: int = 31, width: int = 31) -> Image.Image:
+        array = torch.full((height, width, 3), value, dtype=torch.uint8).numpy()
+        return Image.fromarray(array, mode="RGB")
+
+    def test_blurred_composite_preserves_mask_polarity(self):
+        generated = [self.solid_image(255), self.solid_image(255)]
+        input_frames = torch.full((2, 3, 31, 31), -1.0)
+        masks = torch.stack(
+            (torch.ones(1, 31, 31), torch.zeros(1, 31, 31))
+        )
+        output = blurred_composite(generated, input_frames, masks, kernel_size=21)
+        self.assertEqual(int(np.asarray(output[0]).min()), 255)
+        self.assertEqual(int(np.asarray(output[1]).max()), 0)
+
+    def test_blurred_composite_softens_only_the_boundary(self):
+        generated = [self.solid_image(255)]
+        input_frames = torch.full((1, 3, 31, 31), -1.0)
+        bg_mask = torch.zeros(1, 1, 31, 31)
+        bg_mask[:, :, :, :16] = 1.0
+        output = np.asarray(
+            blurred_composite(
+                generated, input_frames, bg_mask, kernel_size=21
+            )[0]
+        )
+        self.assertEqual(int(output[15, 5, 0]), 255)
+        self.assertGreater(int(output[15, 16, 0]), 0)
+        self.assertLess(int(output[15, 16, 0]), 255)
+        self.assertEqual(int(output[15, 30, 0]), 0)
+
+    def test_hard_mode_remains_the_existing_default_path(self):
+        generated = [self.solid_image(255, 5, 5)]
+        input_frames = torch.full((1, 3, 5, 5), -1.0)
+        bg_mask = torch.zeros(1, 1, 5, 5)
+        bg_mask[:, :, :, :2] = 1.0
+        output = np.asarray(
+            composite_images(generated, input_frames, bg_mask, mode="hard")[0]
+        )
+        self.assertEqual(int(output[:, :2].min()), 255)
+        self.assertEqual(int(output[:, 2:].max()), 0)
 
 
 if __name__ == "__main__":

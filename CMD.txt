@@ -68,6 +68,17 @@ tmux new -s <name>
 ** open available tmux
 tmux attach -t "name"
 
+** kill tmux
+tmux kill-session -t "name"
+
+
+** Detach but dont stop tmux job
+ Ctrl + B.
+release two button.
+enter D
+
+stream disconnected before completion: error sending request for url (http://127.0.0.1:17841/v1/responses)
+
 tensorboard   --logdir /home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/vcm_stc_flow_stage1/tensorboard   --port 6006
 
 date -d @1785913405 (check the timestep of tensorboard)

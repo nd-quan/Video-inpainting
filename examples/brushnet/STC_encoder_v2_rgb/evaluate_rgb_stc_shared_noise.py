@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence, Tuple
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -76,7 +77,11 @@ def parse_args():
     parser.add_argument("--baseline_checkpoint", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--stc_adapter_path", type=Path, default=DEFAULT_ADAPTER)
     parser.add_argument("--dataset_root", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--split", choices=("valid", "test"), default="valid")
+    parser.add_argument(
+        "--split",
+        default="valid",
+        help="Dataset split directory below --dataset_root (for example valid, test, or long_test).",
+    )
     parser.add_argument(
         "--dataset_layout",
         choices=("auto", "hierarchical", "flat_test"),
@@ -88,6 +93,15 @@ def parse_args():
         ),
     )
     parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--include_branches",
+        nargs="+",
+        metavar="CLASS/SEQUENCE",
+        help=(
+            "Evaluate only these branches of a hierarchical dataset, for example "
+            "Class_A/Traffic Class_D/BasketballPass."
+        ),
+    )
     parser.add_argument("--image_encoder_name_or_path", default=DEFAULT_IMAGE_ENCODER)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--clip_length", type=int, default=8)
@@ -102,7 +116,20 @@ def parse_args():
     parser.add_argument("--shared_bg_seed", type=int, default=6789)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max_clips", type=int, default=None)
-    parser.add_argument("--roi_composite", choices=("none", "hard"), default="hard")
+    parser.add_argument(
+        "--roi_composite",
+        choices=("none", "hard", "blurred"),
+        default="hard",
+    )
+    parser.add_argument(
+        "--roi_blur_kernel_size",
+        type=int,
+        default=21,
+        help=(
+            "Odd Gaussian kernel used by --roi_composite blurred. The formula "
+            "matches test_brushnet_*_fusion_base.py; default: 21."
+        ),
+    )
     parser.add_argument("--save_references", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--preflight_only", action="store_true")
@@ -117,6 +144,8 @@ def parse_args():
         parser.error("--max_clips must be positive")
     if not 0.0 <= args.shared_bg_noise_strength <= 1.0:
         parser.error("--shared_bg_noise_strength must be in [0,1]")
+    if args.roi_blur_kernel_size < 1 or args.roi_blur_kernel_size % 2 == 0:
+        parser.error("--roi_blur_kernel_size must be a positive odd integer")
     return args
 
 
@@ -208,6 +237,11 @@ def preflight(args) -> Tuple[HierarchicalV8ClipDataset, Dict[str, Path]]:
         clip_length=args.clip_length,
         stride=args.clip_stride,
         resolution=args.resolution,
+        **(
+            {"include_branches": args.include_branches}
+            if dataset_layout == "hierarchical"
+            else {}
+        ),
     )
     adapter = RGBSTCConditionAdapter.from_pretrained(str(args.stc_adapter_path))
     if adapter.config.condition_mode != "full_rgb_bg_mask":
@@ -223,6 +257,7 @@ def preflight(args) -> Tuple[HierarchicalV8ClipDataset, Dict[str, Path]]:
         "source_frame_count": dataset.frame_count,
         "covered_frame_count": dataset.covered_frame_count,
         "branch_count": dataset.branch_count,
+        "included_branches": list(getattr(dataset, "include_branches", ())),
         "adapter": str(args.stc_adapter_path),
         "baseline": str(paths["root"]),
         "mask_semantics": "raw=0_BG/255_ROI; internal M_BG=1/0",
@@ -317,6 +352,86 @@ def hard_composite(
     output = generated_tensor * bg + input_tensor * (1.0 - bg)
     arrays = (output.clamp(0, 1) * 255).round().byte().permute(0, 2, 3, 1).numpy()
     return [Image.fromarray(array, mode="RGB") for array in arrays]
+
+
+def blurred_composite(
+    generated: Sequence[Image.Image],
+    input_frames: torch.Tensor,
+    bg_mask: torch.Tensor,
+    kernel_size: int = 21,
+) -> List[Image.Image]:
+    """Blend generated BG into the HQ ROI with the historical soft boundary.
+
+    ``bg_mask`` follows this repo's internal convention: 1 is degraded BG to
+    restore and 0 is the high-quality ROI to preserve.  This reproduces the
+    active blending path in
+    ``test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_base.py``::
+
+        blurred = GaussianBlur(M_BG, (k, k), sigmaX=0)
+        M_soft = 1 - (1 - M_BG) * (1 - blurred)
+        output = input_ROI * (1 - M_soft) + generated * M_soft
+
+    OpenCV and uint8 truncation are intentionally retained to match that
+    historical inference implementation rather than introducing a different
+    torch/PIL blur convention.
+    """
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be a positive odd integer")
+    if len(generated) != int(input_frames.shape[0]) or len(generated) != int(
+        bg_mask.shape[0]
+    ):
+        raise ValueError("generated, input_frames, and bg_mask batch sizes must match")
+
+    input_images = tensor_to_pil(input_frames)
+    bg_masks = bg_mask.detach().float().cpu().clamp(0, 1)
+    outputs: List[Image.Image] = []
+    for index, (generated_image, input_image) in enumerate(
+        zip(generated, input_images)
+    ):
+        generated_array = np.asarray(
+            generated_image.convert("RGB"), dtype=np.uint8
+        ).astype(np.float32)
+        input_array = np.asarray(input_image, dtype=np.uint8).astype(np.float32)
+        bg = bg_masks[index, 0].numpy().astype(np.float32, copy=False)
+        if generated_array.shape[:2] != bg.shape or input_array.shape[:2] != bg.shape:
+            raise ValueError(
+                "Generated/input/mask spatial sizes must match for blurred composite"
+            )
+
+        blurred = cv2.GaussianBlur(
+            bg * 255.0,
+            (int(kernel_size), int(kernel_size)),
+            0,
+        ) / 255.0
+        soft_bg = 1.0 - (1.0 - bg) * (1.0 - blurred)
+        soft_bg = soft_bg[..., None]
+        input_roi = input_array * (1.0 - bg[..., None])
+        pasted = input_roi * (1.0 - soft_bg) + generated_array * soft_bg
+        outputs.append(
+            Image.fromarray(np.clip(pasted, 0, 255).astype(np.uint8), mode="RGB")
+        )
+    return outputs
+
+
+def composite_images(
+    generated: Sequence[Image.Image],
+    input_frames: torch.Tensor,
+    bg_mask: torch.Tensor,
+    mode: str,
+    blur_kernel_size: int = 21,
+) -> List[Image.Image]:
+    if mode == "none":
+        return list(generated)
+    if mode == "hard":
+        return hard_composite(generated, input_frames, bg_mask)
+    if mode == "blurred":
+        return blurred_composite(
+            generated,
+            input_frames,
+            bg_mask,
+            kernel_size=blur_kernel_size,
+        )
+    raise ValueError(f"Unsupported ROI composite mode: {mode!r}")
 
 
 def save_images(images: Sequence[Image.Image], directory: Path, frame_ids: Sequence[int]):
@@ -549,6 +664,8 @@ def main():
                 "brushnet_condition": "[z_input + delta_z_BG, M_BG]",
                 "cfg_condition_duplication": True,
                 "mask_semantics": "M_BG=1 degraded BG; M_BG=0 HQ ROI",
+                "roi_composite": args.roi_composite,
+                "roi_blur_kernel_size": args.roi_blur_kernel_size,
             },
             indent=2,
             sort_keys=True,
@@ -632,10 +749,12 @@ def main():
             ),
             brushnet_conditioning_scale=float(args.brushnet_conditioning_scale),
         ).images
-        final = (
-            hard_composite(generated, input_frames, bg_mask)
-            if args.roi_composite == "hard"
-            else list(generated)
+        final = composite_images(
+            generated,
+            input_frames,
+            bg_mask,
+            mode=args.roi_composite,
+            blur_kernel_size=args.roi_blur_kernel_size,
         )
         metrics = compute_metrics(final, sample["pixel_values"], bg_mask)
         metrics.update({f"raw_{key}": value for key, value in compute_metrics(generated, sample["pixel_values"], bg_mask).items()})

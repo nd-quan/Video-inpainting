@@ -36,7 +36,7 @@ DEFAULT_EVAL_ROOT = Path(
 #     "eval_rgb_stc_v2/valid/checkpoint-2000-sBG-09"
 # )
 DEFAULT_FRAME_KINDS = ("final",)
-FRAME_KINDS = ("final", "raw", "input", "gt", "mask_roi")
+FRAME_KINDS = ("final", "raw", "input", "GT", "mask")
 DEFAULT_SEQUENCE_FPS = {
     # SFU validation sequences. The evaluator uses ``Class_X__<name>`` in
     # folder names; fps_for_sequence below strips that prefix before lookup.

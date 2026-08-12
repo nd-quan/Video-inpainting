@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "dataset_root": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset_test_stc",
+  "manifest": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset_test_stc/manifest.json",
+  "raft_checkpoint": "/home/cilab/ndquan/videoInpainting/pretrained/ProPainter/weights/raft-things.pth",
+  "raft_sha256": "fcfa4125d6418f4de95d84aec20a3c5f4e205101715a79f193243c186ac9a7e1",
+  "height": 512,
+  "width": 512,
+  "iters": 20,
+  "normalization": "RGB [0,1] -> [-1,1]",
+  "format": "npz teacher_f/teacher_b [2,H,W], valid_f/valid_b [1,H,W]",
+  "layout": "<split>/<class>/<sequence>/<frame0>_<frame1>.npz"
+}

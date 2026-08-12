@@ -5,9 +5,35 @@
 ########## 그 중에서 v2는 ip_adapter 폴더에서 불러오고 v3는 diffuser안에 구현된 load_ipadapter로
 # v3는 v2가 잘 나와서 구현 안함
 
+import json
 import os
-from glob import glob
+from pathlib import Path
 from tqdm import tqdm
+
+from sfu_long_test_loader import (
+    DEFAULT_LONG_TEST_ROOT,
+    load_sequences,
+    parse_sequence_names,
+    print_preflight,
+)
+
+
+long_test_root = Path(os.environ.get("LONG_TEST_ROOT", str(DEFAULT_LONG_TEST_ROOT)))
+output_root = Path(
+    os.environ.get(
+        "OUTPUT_ROOT",
+        "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
+        "eval_finetune_sharednoise/long_test_fixedBG_temporal_v0",
+    )
+)
+selected_names = parse_sequence_names(os.environ.get("SEQUENCES"))
+preflight_only = os.environ.get("PREFLIGHT_ONLY", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+sequences = load_sequences(long_test_root, output_root, selected_names)
+print_preflight(sequences)
+if preflight_only:
+    raise SystemExit(0)
 
 from diffusers.pipelines.brushnet.pipeline_brushnet_sharedNoise_sameBG_v0_0 import (
     StableDiffusionBrushNetPipeline,
@@ -45,26 +71,6 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cudnn.deterministic = True
 device = "cuda"
 
-image_dir = os.environ.get(
-    "IMAGE_DIR",
-    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/BasketballPass/inputs",
-)
-
-
-mask_dir = os.environ.get(
-    "MASK_DIR",
-    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test/BasketballPass/masks",
-)
-
-output_dir = os.environ.get(
-    "OUTPUT_DIR",
-    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/Generated_image/BasketballPass/tmpGuidance",
-)
-# test 15는 14에서 그냥 copy&paste
-# test 16은 blending을 반대로 
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-
 # base_model_path = "lambdalabs/miniSD-diffusers"
 base_model_path = os.environ.get(
     "BASE_MODEL_PATH",
@@ -74,7 +80,8 @@ base_model_path = os.environ.get(
 
 checkpoint_dir = os.environ.get(
     "CHECKPOINT_DIR",
-    "/home/cilab/ndquan/NAS_ndq/model_base/Checkpoint/train_sharedNoise_sameBG_v0_0/checkpoint-2500",
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
+    "checkpoint_sharedNoise_sameBG_0.9/checkpoint-2500",
 )
 
 brushnet_path = f"{checkpoint_dir}/brushnet"
@@ -105,7 +112,7 @@ temporal_detach_previous = (
     in {"1", "true", "yes", "on"}       ### tested: True (v0_4)
 )
 flow_batch_size = int(os.environ.get("TEMPORAL_FLOW_BATCH_SIZE", "2"))
-force_regenerate = os.environ.get("FORCE_REGENERATE", "1").lower() in {"1", "true", "yes", "on"}
+force_regenerate = os.environ.get("FORCE_REGENERATE", "0").lower() in {"1", "true", "yes", "on"}
 
 brushnet_conditioning_scale = 1.0
 
@@ -119,9 +126,6 @@ if temporal_every_n_steps <= 0:
     raise ValueError("TEMPORAL_EVERY_N_STEPS must be positive.")
 if flow_batch_size <= 0:
     raise ValueError("TEMPORAL_FLOW_BATCH_SIZE must be positive.")
-for input_dir_name, input_dir_path in (("IMAGE_DIR", image_dir), ("MASK_DIR", mask_dir)):
-    if not os.path.isdir(input_dir_path):
-        raise FileNotFoundError(f"{input_dir_name} does not exist: {input_dir_path}")
 for model_dir_name, model_dir_path in (
     ("BASE_MODEL_PATH", base_model_path),
     ("CHECKPOINT_DIR", checkpoint_dir),
@@ -173,37 +177,6 @@ flow_transform = flow_weights.transforms()
 flow_model = raft_large(weights=flow_weights, progress=True).eval()
 for parameter in flow_model.parameters():
     parameter.requires_grad_(False)
-
-# 이미지 & 마스크 경로
-image_paths = sorted(glob(os.path.join(image_dir, "*.png")))
-mask_paths = sorted(glob(os.path.join(mask_dir, "*.png")))
-
-if not image_paths:
-    raise FileNotFoundError(f"No PNG input frames found in: {image_dir}")
-if len(mask_paths) != len(image_paths):
-    raise ValueError(
-        f"Image/mask count mismatch: {len(image_paths)} images vs {len(mask_paths)} masks."
-    )
-image_basenames = [os.path.basename(path) for path in image_paths]
-mask_basenames = [os.path.basename(path) for path in mask_paths]
-if image_basenames != mask_basenames:
-    raise ValueError("Input frame and mask filenames must match exactly.")
-
-
-existing_basenames = {os.path.basename(p) for p in glob(os.path.join(output_dir, "*.png"))}
-if force_regenerate:
-    existing_basenames = set()
-
-indexed_all = list(enumerate(zip(image_paths, mask_paths)))
-
-indexed_pending = [
-    (idx, img, msk)
-    for idx, (img, msk) in indexed_all
-    if os.path.basename(img) not in existing_basenames
-]
-
-print(f"[Resume] 총 {len(indexed_all)}개 중 이미 {len(indexed_all) - len(indexed_pending)}개 완료, "
-      f"{len(indexed_pending)}개 생성 예정.")
 
 resize_transform = transforms.Compose([
     transforms.Resize((512, 512)),
@@ -353,138 +326,126 @@ shared_bg_noise = torch.randn(
     dtype=torch.float32,
 )
 
-clips = [indexed_all[i : i + clip_size] for i in range(0, len(indexed_all), clip_size)]
-clips_to_run = [
-    (clip_idx, clip)
-    for clip_idx, clip in enumerate(clips)
-    if any(os.path.basename(image_path) not in existing_basenames for _, (image_path, _) in clip)
-]
-
-print(
-    f"[Fixed shared BG + temporal guidance] clip_size={clip_size}, "
-    f"clips_to_run={len(clips_to_run)}, shared_strength={shared_bg_noise_strength}, "
-    f"variance_preserving={variance_preserving_shared_noise}, "
-    f"temporal_window=[{temporal_start_step}, {temporal_end_step}), "
-    f"temporal_scale={temporal_guidance_scale}, every_n_steps={temporal_every_n_steps}"
-)
-
-for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run)):
-    fg_list = []
-    bg_list = []
-    init_list = []
-    mask_list = []
-    prompt_list = []
-    flow_frame_tensors = []
-    roi_mask_tensors = []
-
-    # for _, (image_path, mask_path, caption) in clip:
-    for _, (image_path, mask_path) in clip:
-        (
-            fg_pil,
-            bg_pil,
-            init_image,
-            mask_image,
-            flow_frame_tensor,
-            roi_mask_tensor,
-        ) = prepare_frame_inputs(image_path, mask_path)
-        fg_list.append(fg_pil)
-        bg_list.append(bg_pil)
-        init_list.append(init_image)
-        mask_list.append(mask_image)
-        # prompt_list.append(caption)
-        prompt_list.append("")
-        flow_frame_tensors.append(flow_frame_tensor)
-        roi_mask_tensors.append(roi_mask_tensor)
-
-    flow_frames = torch.cat(flow_frame_tensors, dim=0)
-    roi_masks = torch.cat(roi_mask_tensors, dim=0)
-
-    clip_noise_generator = torch.Generator(device="cpu").manual_seed(main_noise_seed + clip_idx)
-    clip_noise = torch.randn(
-        (len(clip), *latent_shape),
-        generator=clip_noise_generator,
-        device="cpu",
-        dtype=torch.float32,
+def run_sequence(sequence):
+    output_dir = sequence.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image_paths = [str(path) for path in sequence.image_paths]
+    mask_paths = [str(path) for path in sequence.mask_paths]
+    existing_basenames = {path.name for path in output_dir.glob("*.png")}
+    if force_regenerate:
+        existing_basenames = set()
+    indexed_all = list(enumerate(zip(image_paths, mask_paths)))
+    clips = [indexed_all[i : i + clip_size] for i in range(0, len(indexed_all), clip_size)]
+    clips_to_run = [
+        (clip_idx, clip)
+        for clip_idx, clip in enumerate(clips)
+        if any(os.path.basename(image_path) not in existing_basenames for _, (image_path, _) in clip)
+    ]
+    metadata = {
+        "split": sequence.spec.split,
+        "label": sequence.spec.label,
+        "class": sequence.spec.class_name,
+        "source_sequence": sequence.spec.source_name,
+        "image_dir": str(sequence.image_dir),
+        "mask_dir": str(sequence.mask_dir),
+        "output_dir": str(output_dir),
+        "frame_count": len(sequence.frame_ids),
+        "frame_range": [sequence.frame_ids[0], sequence.frame_ids[-1]],
+        "temporal_clip_size": clip_size,
+    }
+    (output_dir / "source_metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    )
+    print(
+        f"[Fixed shared BG + temporal guidance:{sequence.spec.label}] "
+        f"clip_size={clip_size}, clips_to_run={len(clips_to_run)}, "
+        f"shared_strength={shared_bg_noise_strength}, "
+        f"variance_preserving={variance_preserving_shared_noise}, "
+        f"temporal_window=[{temporal_start_step}, {temporal_end_step}), "
+        f"temporal_scale={temporal_guidance_scale}, every_n_steps={temporal_every_n_steps}"
     )
 
-    if len(clip) > 1 and temporal_guidance_scale > 0:
-        flow_backward, stable_bg, bg_masks = prepare_temporal_conditions(
-            flow_frames=flow_frames,
-            roi_masks=roi_masks,
+    for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run), desc=sequence.spec.label):
+        fg_list, bg_list, init_list, mask_list, prompt_list = [], [], [], [], []
+        flow_frame_tensors, roi_mask_tensors = [], []
+        for _, (image_path, mask_path) in clip:
+            prepared = prepare_frame_inputs(image_path, mask_path)
+            fg_pil, bg_pil, init_image, mask_image, flow_frame_tensor, roi_mask_tensor = prepared
+            fg_list.append(fg_pil)
+            bg_list.append(bg_pil)
+            init_list.append(init_image)
+            mask_list.append(mask_image)
+            prompt_list.append("")
+            flow_frame_tensors.append(flow_frame_tensor)
+            roi_mask_tensors.append(roi_mask_tensor)
+
+        flow_frames = torch.cat(flow_frame_tensors, dim=0)
+        roi_masks = torch.cat(roi_mask_tensors, dim=0)
+        sequence_seed = main_noise_seed + clip_idx
+        clip_noise_generator = torch.Generator(device="cpu").manual_seed(sequence_seed)
+        clip_noise = torch.randn(
+            (len(clip), *latent_shape), generator=clip_noise_generator,
+            device="cpu", dtype=torch.float32,
         )
-        pipe.scheduler.set_temporal_guidance(
-            decoder=pipe.vae.decode,
-            flow_backward=flow_backward,
-            stable_bg=stable_bg,
-            # bg_masks=bg_masks,   # not used in the current implementation
-            guidance_scale=temporal_guidance_scale,
-            start_step=temporal_start_step,
-            end_step=temporal_end_step,
-            every_n_steps=temporal_every_n_steps,
-            decode_chunk_size=temporal_decode_chunk_size,
-            vae_scaling_factor=pipe.vae.config.scaling_factor,
-            loss_scale=temporal_loss_scale,
-            detach_previous=temporal_detach_previous,
-            loss_type="l2",
-            enabled=True,
+        temporal_enabled = len(clip) > 1 and temporal_guidance_scale > 0
+        if temporal_enabled:
+            flow_backward, stable_bg, bg_masks = prepare_temporal_conditions(flow_frames, roi_masks)
+            pipe.scheduler.set_temporal_guidance(
+                decoder=pipe.vae.decode, flow_backward=flow_backward, stable_bg=stable_bg,
+                guidance_scale=temporal_guidance_scale, start_step=temporal_start_step,
+                end_step=temporal_end_step, every_n_steps=temporal_every_n_steps,
+                decode_chunk_size=temporal_decode_chunk_size,
+                vae_scaling_factor=pipe.vae.config.scaling_factor,
+                loss_scale=temporal_loss_scale, detach_previous=temporal_detach_previous,
+                loss_type="l2", enabled=True,
+            )
+            print(
+                f"[{sequence.spec.label} clip {clip_idx}] temporal pairs={len(clip) - 1}, "
+                f"stable_bg_ratio={float(stable_bg.mean().detach().cpu()):.4f}"
+            )
+        else:
+            pipe.scheduler.clear_temporal_guidance()
+
+        sampling_generator = torch.Generator(device=device).manual_seed(sequence_seed)
+        torch.manual_seed(sequence_seed)
+        torch.cuda.manual_seed_all(sequence_seed)
+        result = ip_model.generate_fgbg(
+            fg_pil_image=fg_list, bg_pil_image=bg_list, prompt=prompt_list,
+            image=init_list, mask_image=mask_list, num_samples=1,
+            num_inference_steps=num_inference_steps,
+            negative_prompt=[""] * len(prompt_list), generator=sampling_generator,
+            latents=clip_noise.to(device=device, dtype=pipe.dtype),
+            use_shared_bg_noise=True,
+            shared_bg_noise=shared_bg_noise.to(device=device, dtype=pipe.dtype),
+            shared_bg_noise_strength=shared_bg_noise_strength,
+            variance_preserving_shared_noise=variance_preserving_shared_noise,
+            brushnet_conditioning_scale=brushnet_conditioning_scale,
         )
-        stable_bg_ratio = float(stable_bg.mean().detach().cpu())
-        print(
-            f"[Clip {clip_idx}] temporal pairs={len(clip) - 1}, "
-            f"stable_bg_ratio={stable_bg_ratio:.4f}"
-        )
-    else:
+        if temporal_enabled:
+            print(
+                f"[{sequence.spec.label} clip {clip_idx}] "
+                f"final temporal_loss={pipe.scheduler.last_temporal_loss}, "
+                f"update_norm={pipe.scheduler.last_temporal_update_norm}, "
+                f"calls={pipe.scheduler.temporal_guidance_calls}, "
+                f"applied={pipe.scheduler.temporal_guidance_applied_steps}, "
+                f"skipped_reason={pipe.scheduler.last_temporal_skipped_reason}"
+            )
         pipe.scheduler.clear_temporal_guidance()
+        if temporal_enabled:
+            del flow_backward, stable_bg, bg_masks
+        del flow_frames, roi_masks, flow_frame_tensors, roi_mask_tensors
+        torch.cuda.empty_cache()
 
-    sampling_generator = torch.Generator(device=device).manual_seed(main_noise_seed + clip_idx)
-    torch.manual_seed(main_noise_seed + clip_idx)
-    torch.cuda.manual_seed_all(main_noise_seed + clip_idx)
+        for image, (orig_idx, (image_path, mask_path)) in zip(result, clip):
+            basename = os.path.basename(image_path)
+            if basename in existing_basenames:
+                continue
+            if blended:
+                print(f"[{sequence.spec.label}:{orig_idx}] blending...")
+                image = blend_with_input(image, image_path, mask_path)
+            image.save(output_dir / basename)
+            existing_basenames.add(basename)
 
-    result = ip_model.generate_fgbg(
-        fg_pil_image=fg_list,
-        bg_pil_image=bg_list,
-        prompt=prompt_list,
-        image=init_list,
-        mask_image=mask_list,
-        num_samples=1,
-        num_inference_steps=num_inference_steps,
-        negative_prompt=[""] * len(prompt_list),
-        generator=sampling_generator,
-        latents=clip_noise.to(device=device, dtype=pipe.dtype),
-        use_shared_bg_noise=True,
-        shared_bg_noise=shared_bg_noise.to(device=device, dtype=pipe.dtype),
-        shared_bg_noise_strength=shared_bg_noise_strength,
-        variance_preserving_shared_noise=variance_preserving_shared_noise,
-        brushnet_conditioning_scale=brushnet_conditioning_scale,
-    )
 
-    if len(clip) > 1 and temporal_guidance_scale > 0:
-        print(
-            f"[Clip {clip_idx}] final temporal_loss={pipe.scheduler.last_temporal_loss}, "
-            f"raw_grad_norm={pipe.scheduler.last_temporal_raw_grad_norm}, "
-            f"masked_grad_norm={pipe.scheduler.last_temporal_masked_grad_norm}, "
-            f"update_norm={pipe.scheduler.last_temporal_update_norm}, "
-            f"active_frames={pipe.scheduler.last_temporal_active_frames}/{len(clip)}, "
-            f"calls={pipe.scheduler.temporal_guidance_calls}, "
-            f"applied={pipe.scheduler.temporal_guidance_applied_steps}, "
-            f"skipped={pipe.scheduler.temporal_guidance_skipped_steps}, "
-            f"skipped_reason={pipe.scheduler.last_temporal_skipped_reason}"
-        )
-
-    pipe.scheduler.clear_temporal_guidance()
-    if len(clip) > 1 and temporal_guidance_scale > 0:
-        del flow_backward, stable_bg, bg_masks
-    del flow_frames, roi_masks, flow_frame_tensors, roi_mask_tensors
-    torch.cuda.empty_cache()
-
-    for image, (orig_idx, (image_path, mask_path)) in zip(result, clip):
-        basename = os.path.basename(image_path)
-        if basename in existing_basenames:
-            continue
-
-        if blended:
-            print(f"[{orig_idx}] blending...")
-            image = blend_with_input(image, image_path, mask_path)
-
-        image.save(os.path.join(output_dir, basename))
-        existing_basenames.add(basename)
+for sequence in sequences:
+    run_sequence(sequence)

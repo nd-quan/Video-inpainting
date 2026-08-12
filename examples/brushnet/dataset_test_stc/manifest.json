@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "description": "Normalized legacy BrushNet test set for clean RAFT teacher-flow generation",
+  "layout": "<split>/<kind>/<class>/<sequence>/<source_frame>.png",
+  "kinds": ["GT", "input", "mask"],
+  "splits": ["test"],
+  "mask_semantics": {"background": 0, "roi": 255},
+  "sequences": [
+    {
+      "name": "Traffic",
+      "class": "Class_A",
+      "fps": 30,
+      "native_width": 2560,
+      "native_height": 1600,
+      "splits": {
+        "test": {
+          "segments": [{"start": 0, "end": 59, "source": "legacy_test"}],
+          "frame_count": 60,
+          "relative_root": "test/{kind}/Class_A/Traffic"
+        }
+      }
+    },
+    {
+      "name": "ParkScene",
+      "class": "Class_B",
+      "fps": 24,
+      "native_width": 1920,
+      "native_height": 1080,
+      "splits": {
+        "test": {
+          "segments": [{"start": 0, "end": 99, "source": "legacy_test_aligned"}],
+          "frame_count": 100,
+          "relative_root": "test/{kind}/Class_B/ParkScene"
+        }
+      }
+    },
+    {
+      "name": "PartyScene",
+      "class": "Class_C",
+      "fps": 50,
+      "native_width": 512,
+      "native_height": 512,
+      "splits": {
+        "test": {
+          "segments": [{"start": 0, "end": 149, "source": "legacy_test"}],
+          "frame_count": 150,
+          "relative_root": "test/{kind}/Class_C/PartyScene"
+        }
+      }
+    },
+    {
+      "name": "RaceHorses",
+      "class": "Class_C",
+      "fps": 30,
+      "native_width": 512,
+      "native_height": 512,
+      "splits": {
+        "test": {
+          "segments": [{"start": 0, "end": 89, "source": "legacy_test"}],
+          "frame_count": 90,
+          "relative_root": "test/{kind}/Class_C/RaceHorses"
+        }
+      }
+    },
+    {
+      "name": "BasketballPass",
+      "class": "Class_D",
+      "fps": 50,
+      "native_width": 512,
+      "native_height": 512,
+      "splits": {
+        "test": {
+          "segments": [{"start": 0, "end": 149, "source": "legacy_test"}],
+          "frame_count": 150,
+          "relative_root": "test/{kind}/Class_D/BasketballPass"
+        }
+      }
+    }
+  ]
+}
