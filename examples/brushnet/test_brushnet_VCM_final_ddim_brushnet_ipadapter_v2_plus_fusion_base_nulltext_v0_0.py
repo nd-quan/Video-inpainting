@@ -11,9 +11,17 @@ It is the no-shared-noise counterpart of:
 """
 
 import argparse
+import json
 import os
 import random
-from glob import glob
+from pathlib import Path
+
+from sfu_long_test_loader import (
+    DEFAULT_LONG_TEST_ROOT,
+    load_sequences,
+    parse_sequence_names,
+    print_preflight,
+)
 
 import cv2
 import numpy as np
@@ -29,24 +37,15 @@ from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
 
 DEFAULT_BASE_MODEL = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
     "base_model/stable-diffusion-v1-5/stable-diffusion-v1-5"
 )
 DEFAULT_CHECKPOINT_DIR = (
-    "/media/ssd1/ndquan/NAS_ndq/model_base/Checkpoint/fine-tuning/checkpoint-3500"
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/checkpoint_naeun/checkpoint-200000"
 )
-DEFAULT_IMAGE_DIR = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
-    "dataset/test/Traffic/inputs"
-)
-
-DEFAULT_MASK_DIR = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/"
-    "dataset/test/Traffic/masks"
-)
-DEFAULT_OUTPUT_DIR = (
-    "/media/ssd1/ndquan/videoInpainting/code/BrushNet/Quan_test/results/"
-    "Generated_image/Traffic/new/nulltext_checkpoint3500_modelBase"
+DEFAULT_OUTPUT_ROOT = Path(
+    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
+    "Generated_image/long_test_base_nulltext_v0_0"
 )
 DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 
@@ -55,9 +54,18 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run BrushNet + IP-Adapter inference with null-text conditioning and no shared noise."
     )
-    parser.add_argument("--image_dir", default=DEFAULT_IMAGE_DIR)
-    parser.add_argument("--mask_dir", default=DEFAULT_MASK_DIR)
-    parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--long_test_root", type=Path, default=DEFAULT_LONG_TEST_ROOT)
+    parser.add_argument("--output_root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument(
+        "--sequences",
+        default=None,
+        help="Comma-separated legacy sequence names; default: all ten sequences.",
+    )
+    parser.add_argument(
+        "--preflight_only",
+        action="store_true",
+        help="Validate and print dataset paths without loading model weights.",
+    )
     parser.add_argument("--base_model_path", default=DEFAULT_BASE_MODEL)
     parser.add_argument("--checkpoint_dir", default=DEFAULT_CHECKPOINT_DIR)
     parser.add_argument("--brushnet_path", default=None)
@@ -75,7 +83,10 @@ def parse_args():
     parser.add_argument("--no_blend", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max_images", type=int, default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.max_images is not None and args.max_images <= 0:
+        parser.error("--max_images must be positive")
+    return args
 
 
 def set_deterministic(seed):
@@ -88,14 +99,6 @@ def set_deterministic(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.use_deterministic_algorithms(True)
-
-
-def list_images(directory):
-    exts = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp")
-    paths = []
-    for ext in exts:
-        paths.extend(glob(os.path.join(directory, ext)))
-    return sorted(paths)
 
 
 def require_path(path, kind):
@@ -193,76 +196,102 @@ def main():
     args = parse_args()
     set_deterministic(args.seed)
 
+    sequences = load_sequences(
+        args.long_test_root,
+        args.output_root,
+        parse_sequence_names(args.sequences),
+    )
+    print_preflight(sequences)
+    if args.preflight_only:
+        return
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    require_path(args.image_dir, "dir")
-    require_path(args.mask_dir, "dir")
     require_path(args.base_model_path, "dir")
-    os.makedirs(args.output_dir, exist_ok=True)
 
     pipe, ip_model = build_pipeline(args, device)
-
-    image_paths = list_images(args.image_dir)
-    mask_paths = list_images(args.mask_dir)
-    if len(image_paths) != len(mask_paths):
-        raise ValueError(
-            f"Image/mask count mismatch: {len(image_paths)} images vs {len(mask_paths)} masks"
-        )
-
-    if args.max_images is not None:
-        image_paths = image_paths[: args.max_images]
-        mask_paths = mask_paths[: args.max_images]
-
-    existing_basenames = set()
-    if not args.overwrite:
-        existing_basenames = {os.path.basename(p) for p in glob(os.path.join(args.output_dir, "*.png"))}
-
-    indexed_all = list(enumerate(zip(image_paths, mask_paths)))
-    indexed_pending = [
-        (idx, image_path, mask_path)
-        for idx, (image_path, mask_path) in indexed_all
-        if args.overwrite or os.path.basename(image_path) not in existing_basenames
-    ]
-
-    print(
-        f"[Resume] total={len(indexed_all)}, done={len(indexed_all) - len(indexed_pending)}, "
-        f"pending={len(indexed_pending)}"
-    )
-
-    generator = torch.Generator(device).manual_seed(args.seed)
     transform = transforms.Compose([transforms.Resize((args.resolution, args.resolution))])
 
-    for orig_idx, image_path, mask_path in tqdm(indexed_pending, total=len(indexed_pending)):
-        init_image_np = cv2.imread(image_path)[:, :, ::-1]
-        mask_np = 1.0 * (cv2.imread(mask_path).sum(-1) > 255)[:, :, np.newaxis]
+    for sequence in sequences:
+        output_dir = sequence.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        image_paths = list(sequence.image_paths)
+        mask_paths = list(sequence.mask_paths)
+        if args.max_images is not None:
+            image_paths = image_paths[: args.max_images]
+            mask_paths = mask_paths[: args.max_images]
 
-        init_image = Image.fromarray(init_image_np.astype(np.uint8)).convert("RGB")
-        mask_image = Image.fromarray((mask_np * 255).astype(np.uint8).repeat(3, -1)).convert("RGB")
-        init_image = transform(init_image)
-        mask_image = transform(mask_image)
-
-        fg_pil, bg_pil = prepare_fg_bg(init_image_np, mask_np, transform)
-
-        result = ip_model.generate_fgbg(
-            fg_pil_image=fg_pil,
-            bg_pil_image=bg_pil,
-            prompt=args.prompt,
-            negative_prompt=args.negative_prompt,
-            scale=args.ip_scale,
-            image=init_image,
-            mask_image=mask_image,
-            num_samples=args.num_samples,
-            guidance_scale=args.guidance_scale,
-            num_inference_steps=args.num_inference_steps,
-            generator=generator,
+        existing_basenames = set()
+        if not args.overwrite:
+            existing_basenames = {path.name for path in output_dir.glob("*.png")}
+        indexed_all = list(enumerate(zip(image_paths, mask_paths)))
+        indexed_pending = [
+            (idx, image_path, mask_path)
+            for idx, (image_path, mask_path) in indexed_all
+            if args.overwrite or image_path.name not in existing_basenames
+        ]
+        print(
+            f"[Resume:{sequence.spec.label}] total={len(indexed_all)}, "
+            f"done={len(indexed_all) - len(indexed_pending)}, "
+            f"pending={len(indexed_pending)}"
         )
+        metadata = {
+            "split": sequence.spec.split,
+            "label": sequence.spec.label,
+            "class": sequence.spec.class_name,
+            "source_sequence": sequence.spec.source_name,
+            "image_dir": str(sequence.image_dir),
+            "mask_dir": str(sequence.mask_dir),
+            "output_dir": str(output_dir),
+            "frame_count": len(image_paths),
+            "frame_range": [
+                sequence.frame_ids[0],
+                sequence.frame_ids[len(image_paths) - 1],
+            ],
+        }
+        (output_dir / "source_metadata.json").write_text(
+            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+        )
+        generator = torch.Generator(device).manual_seed(args.seed)
+        progress = tqdm(
+            indexed_pending,
+            total=len(indexed_pending),
+            desc=sequence.spec.label,
+        )
+        for orig_idx, image_path, mask_path in progress:
+            image_path = str(image_path)
+            mask_path = str(mask_path)
+            init_image_np = cv2.imread(image_path)[:, :, ::-1]
+            mask_np = 1.0 * (cv2.imread(mask_path).sum(-1) > 255)[:, :, np.newaxis]
 
-        image = result[0]
-        if not args.no_blend:
-            print(f"[{orig_idx}] blending...")
-            image = blend_with_original(image, image_path, mask_path, args.resolution)
+            init_image = Image.fromarray(init_image_np.astype(np.uint8)).convert("RGB")
+            mask_image = Image.fromarray(
+                (mask_np * 255).astype(np.uint8).repeat(3, -1)
+            ).convert("RGB")
+            init_image = transform(init_image)
+            mask_image = transform(mask_image)
 
-        basename = os.path.basename(image_path)
-        image.save(os.path.join(args.output_dir, basename))
+            fg_pil, bg_pil = prepare_fg_bg(init_image_np, mask_np, transform)
+            result = ip_model.generate_fgbg(
+                fg_pil_image=fg_pil,
+                bg_pil_image=bg_pil,
+                prompt=args.prompt,
+                negative_prompt=args.negative_prompt,
+                scale=args.ip_scale,
+                image=init_image,
+                mask_image=mask_image,
+                num_samples=args.num_samples,
+                guidance_scale=args.guidance_scale,
+                num_inference_steps=args.num_inference_steps,
+                generator=generator,
+            )
+
+            image = result[0]
+            if not args.no_blend:
+                print(f"[{sequence.spec.label}:{orig_idx}] blending...")
+                image = blend_with_original(
+                    image, image_path, mask_path, args.resolution
+                )
+            image.save(output_dir / os.path.basename(image_path))
 
 
 if __name__ == "__main__":

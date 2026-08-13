@@ -1,0 +1,29 @@
+{
+  "allow_missing": false,
+  "consistent_rmse_threshold": 0.00392156862745098,
+  "dataset_root": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test",
+  "device": "cpu",
+  "eval_root": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/eval_stc_v2pp_T8_cosine_0.9/test/checkpoint-2000-zero-offset-alpha095-T8-S6",
+  "frame_kind": "final",
+  "local_share_threshold": 0.6,
+  "mask_erode_radius": 2,
+  "max_units": null,
+  "min_blurred_support": 0.25,
+  "min_valid_pixels": 256.0,
+  "moving_motion_threshold": 2.0,
+  "output_dir": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/temporal_analysis_zero_alpha095_T8S6_blurred_k51/RaceHorses",
+  "overlap_mode": "first",
+  "overwrite": false,
+  "preflight_only": false,
+  "primary_scale": 16.0,
+  "scales": [
+    8.0,
+    16.0,
+    32.0
+  ],
+  "split": "test",
+  "static_motion_threshold": 0.5,
+  "teacher_flow_root": "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset_test_stc/teacher_flows_512x512/test/Class_C",
+  "video_filter": "RaceHorses",
+  "visualizations_per_unit": 5
+}

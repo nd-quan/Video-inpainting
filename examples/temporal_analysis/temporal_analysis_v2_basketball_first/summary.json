@@ -1,0 +1,66 @@
+{
+  "contract": {
+    "classification": "heuristic and scale-dependent; local_rmse_share is local_RMSE/(local_RMSE+coarse_RMSE), while severity is raw_temporal_rmse",
+    "effective_mask": "valid_b * eroded_M_BG_t * warp(eroded_M_BG_t-1, teacher_b_t)",
+    "frequency_split": "masked normalized Gaussian low-pass; local=residual-low",
+    "primary_sigma_pixels": 16.0,
+    "residual": "(prediction_t-GT_t) - warp(prediction_t-1-GT_t-1, teacher_b_t)"
+  },
+  "overall_micro_weighted": {
+    "diagnosis_counts": {
+      "local_high_frequency_dominant": 149
+    },
+    "directional_coherence": 0.20605253542637003,
+    "energy_support90_fraction": 0.3854608734591179,
+    "energy_top10_fraction": 0.6435919418166388,
+    "frequency_diagnosis": "local_high_frequency_dominant",
+    "global_dc_l1": 0.0063063554413992405,
+    "global_dc_rmse": 0.007378407469912969,
+    "local_frequency_share": 0.7354435219775336,
+    "local_rmse_share": 0.7354435219775336,
+    "motion_band_counts": {
+      "moderate": 34,
+      "moving": 38,
+      "static": 77
+    },
+    "motion_mean_px": 1.7702902489745609,
+    "pair_count": 149,
+    "pair_raw_rmse_median": 0.05025361197037418,
+    "pair_raw_rmse_p90": 0.07559028593269664,
+    "raw_temporal_l1": 0.03123959711603868,
+    "raw_temporal_rmse": 0.050907851566929604,
+    "sigma_16_coarse_rmse": 0.01667413699290708,
+    "sigma_16_local_rmse": 0.04635262053555945,
+    "skipped_pair_count": 0,
+    "spatial_scope_counts": {
+      "distributed_or_mixed": 149
+    },
+    "spatial_scope_diagnosis": "distributed_or_mixed",
+    "valid_coverage": 0.550127632265923,
+    "valid_pair_count": 149,
+    "window_boundary_pair_count": 24
+  },
+  "per_sequence_count": 1,
+  "preflight": {
+    "candidate_consecutive_pairs": 149,
+    "duplicate_pair_contexts": 0,
+    "eval_root": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/eval_rgb_stc_v2/legacy_test/checkpoint-2000-sBG09",
+    "flow_convention": "teacher_b on current coordinates, current->previous",
+    "frame_kind": "final",
+    "frames_with_context": 150,
+    "mask_semantics": "raw 0=degraded BG, 255=HQ ROI; evaluator uses M_BG=1",
+    "missing_examples": {
+      "prediction": [],
+      "reference": [],
+      "teacher_flow": []
+    },
+    "missing_prediction_count": 0,
+    "missing_reference_count": 0,
+    "missing_teacher_flow_count": 0,
+    "nonconsecutive_transitions_skipped": 0,
+    "overlap_mode": "first",
+    "unique_physical_pairs": 149,
+    "units": 1,
+    "window_boundary_pairs": 24
+  }
+}
