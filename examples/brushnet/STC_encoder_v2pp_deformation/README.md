@@ -129,3 +129,36 @@ include `run_config.json`, `model_contract.json`, `sequence_manifest.json`,
 `SAVE_NOISE_TENSORS=1` only when per-clip noise tensors are needed, since it
 increases disk usage. Re-running the same contract resumes completed clips;
 use `OVERWRITE=1` only for an intentional replacement.
+
+### RAFT temporal DDIM guidance
+
+`run_evaluate_zero_offset_grid_sequence_temporal_and_video.sh` adds the
+training-free temporal guidance used by the historical fixed-BG temporal
+experiment. It estimates adjacent RAFT-Large flow from the degraded input
+frames, keeps only forward/backward-visible stable `M_BG` pixels, decodes
+predicted x0 during the selected DDIM steps, and applies the stable-BG temporal
+gradient to x0. It does not modify the STC-v2++ checkpoint or the zero-grid
+noise law.
+
+For meaningful overlap-to-new-frame guidance, its default
+`TEMPORAL_SAMPLING_SCOPE=full_clip` samples all T=8 rows of the current window.
+Only first-owner/new rows are saved, so the normal sequence-state output policy
+is preserved. This costs about 8/6 more diffusion work after the first window,
+plus RAFT and VAE-gradient decoding.
+
+```bash
+cd /home/cilab/ndquan/videoInpainting/code/BrushNet
+CUDA_VISIBLE_DEVICES=1 \
+DATASET_ROOT=examples/brushnet/dataset/test_1 \
+DATASET_LAYOUT=flat_test \
+MAX_FRAMES_PER_SEQUENCE=150 \
+OUTPUT_DIR=experiments/eval_stc_v2pp_T8_cosine_0.9/test_1/zero-grid-temporal-raft \
+bash examples/brushnet/STC_encoder_v2pp_deformation/run_evaluate_zero_offset_grid_sequence_temporal_and_video.sh
+```
+
+The default temporal parameters reproduce the old test:
+`scale=1e-4`, DDIM steps `[15, 35)`, every step, VAE decode chunks of one,
+loss scale `1024`, and detached previous decoded frame. The terminal log and
+each `clip_metrics.json` record temporal loss/update/skip diagnostics. The
+wrapper runs `Quan_test/imgToVideo_rgb_stc_eval.py` only after evaluation exits
+successfully, writing `videos/<sequence>/final.mp4`.

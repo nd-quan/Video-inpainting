@@ -94,6 +94,13 @@ DEFAULT_OUTPUT = (
 )
 DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 
+# Backward-compatible hooks used by the V4 flow-aligned wrapper. Defaults keep
+# every V3 training/checkpoint behavior unchanged.
+EXPERIMENT_NAME = "rgb_stc_v3_diffusion_plus_flow"
+FLOW_INFERENCE_DEPENDENCY = False
+INFERENCE_COMPONENT = "stc_adapter"
+TRAINING_LOG_TITLE = "RGB-STC v3: L_diff + L_flow"
+
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -435,7 +442,7 @@ def _prune_checkpoints(output_dir: Path, limit: int):
 def checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index):
     return {
         "format_version": 1,
-        "experiment": "rgb_stc_v3_diffusion_plus_flow",
+        "experiment": EXPERIMENT_NAME,
         "global_step": int(global_step),
         "epoch": int(epoch),
         "next_batch_index": int(next_batch_index),
@@ -452,7 +459,8 @@ def checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index)
         "flow_charbonnier_eps": args.flow_charbonnier_eps,
         "flow_region": args.flow_region,
         "flow_max_displacement": list(args.flow_max_displacement),
-        "flow_inference_dependency": False,
+        "flow_inference_dependency": FLOW_INFERENCE_DEPENDENCY,
+        "inference_component": INFERENCE_COMPONENT,
         "condition_mode": args.condition_mode,
         "stc_hidden_channels": args.stc_hidden_channels,
         "stc_num_heads": args.stc_num_heads,
@@ -524,6 +532,7 @@ def save_training_checkpoint(
 
 def _resume_contract(args) -> Dict:
     return {
+        "experiment": EXPERIMENT_NAME,
         "pretrained_model_name_or_path": str(
             Path(args.pretrained_model_name_or_path).resolve()
         ),
@@ -803,7 +812,7 @@ def main(args):
         for parameter in accelerator.unwrap_model(model).parameters()
         if parameter.requires_grad
     )
-    logger.info("***** RGB-STC v3: L_diff + L_flow *****")
+    logger.info("***** %s *****", TRAINING_LOG_TITLE)
     logger.info("Frozen baseline: %s", args.baseline_checkpoint)
     logger.info("IP mapping: %s", ip_report)
     logger.info(
@@ -822,8 +831,9 @@ def main(args):
         args.flow_region,
     )
     logger.info(
-        "Loss: L_total=L_diff + %.6g*L_flow; no flow at inference",
+        "Loss: L_total=L_diff + %.6g*L_flow; flow required at inference=%s",
         args.flow_loss_weight,
+        FLOW_INFERENCE_DEPENDENCY,
     )
     logger.info("Trainable parameters: %s", f"{trainable_count:,}")
     logger.info("Estimated epochs: %d", estimated_epochs)

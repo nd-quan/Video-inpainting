@@ -34,6 +34,11 @@ if str(BRUSHNET_DIR) not in sys.path:
     sys.path.insert(0, str(BRUSHNET_DIR))
 
 from diffusers import DDIMScheduler  # noqa: E402
+from diffusers.schedulers.scheduling_ddim_temporal import (  # noqa: E402
+    TemporalDDIMScheduler,
+    backward_warp as temporal_backward_warp,
+    build_stable_bg_mask,
+)
 from diffusers.models.brushnet import BrushNetModel  # noqa: E402
 from diffusers.pipelines.brushnet.pipeline_sharedNoiseBG_org import (  # noqa: E402
     StableDiffusionBrushNetPipeline,
@@ -156,6 +161,44 @@ def parse_args():
         default="hard",
     )
     parser.add_argument("--roi_blur_kernel_size", type=int, default=21)
+    parser.add_argument(
+        "--temporal_guidance_scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Enable training-free RAFT stable-BG temporal guidance when positive. "
+            "Zero keeps the original DDIM evaluation path."
+        ),
+    )
+    parser.add_argument("--temporal_start_step", type=int, default=15)
+    parser.add_argument("--temporal_end_step", type=int, default=35)
+    parser.add_argument("--temporal_every_n_steps", type=int, default=1)
+    parser.add_argument("--temporal_decode_chunk_size", type=int, default=1)
+    parser.add_argument("--temporal_loss_scale", type=float, default=1024.0)
+    parser.add_argument("--temporal_flow_batch_size", type=int, default=2)
+    parser.add_argument(
+        "--temporal_sampling_scope",
+        choices=("full_clip", "new_frames"),
+        default="full_clip",
+        help=(
+            "Frames passed to diffusion while temporal guidance is enabled. "
+            "full_clip includes cached overlap frames, so the temporal loss has "
+            "overlap-to-new pairs; only newly generated frames are written."
+        ),
+    )
+    parser.add_argument(
+        "--temporal_detach_previous",
+        dest="temporal_detach_previous",
+        action="store_true",
+        default=True,
+        help="Detach the previous decoded frame in the temporal loss (default).",
+    )
+    parser.add_argument(
+        "--no_temporal_detach_previous",
+        dest="temporal_detach_previous",
+        action="store_false",
+        help="Allow temporal gradients through both adjacent decoded frames.",
+    )
     parser.add_argument("--video_filter", nargs="+", default=None)
     parser.add_argument("--max_clips", type=int, default=None)
     parser.add_argument(
@@ -182,6 +225,20 @@ def parse_args():
         parser.error("--max_frames_per_sequence must be positive")
     if args.roi_blur_kernel_size < 1 or args.roi_blur_kernel_size % 2 == 0:
         parser.error("--roi_blur_kernel_size must be a positive odd integer")
+    if args.temporal_guidance_scale < 0:
+        parser.error("--temporal_guidance_scale must be non-negative")
+    if args.temporal_start_step < 0:
+        parser.error("--temporal_start_step must be non-negative")
+    if args.temporal_end_step <= args.temporal_start_step:
+        parser.error("--temporal_end_step must be greater than --temporal_start_step")
+    if args.temporal_every_n_steps < 1:
+        parser.error("--temporal_every_n_steps must be positive")
+    if args.temporal_decode_chunk_size < 1:
+        parser.error("--temporal_decode_chunk_size must be positive")
+    if args.temporal_loss_scale <= 0:
+        parser.error("--temporal_loss_scale must be positive")
+    if args.temporal_flow_batch_size < 1:
+        parser.error("--temporal_flow_batch_size must be positive")
     return args
 
 
@@ -360,16 +417,21 @@ def source_frames_for_video(
     dataset: HierarchicalV8ClipDataset,
     video: str,
 ) -> List[Tuple[int, Path]]:
-    """Read the full source record list for a dataset video without decoding PNGs."""
+    """Read the usable source records for a video without decoding PNGs.
+
+    Flat legacy test trees can contain GT-only tail frames.  The dataset itself
+    intentionally excludes those because no degraded input or mask exists, so
+    a frame cap must use the aligned ``inputs`` records rather than all GT.
+    """
     branch = Path(video)
     if isinstance(dataset, FlatV8TestClipDataset):
-        gt_root = dataset.dataset_root / branch / "gt"
+        source_root = dataset.dataset_root / branch / "inputs"
         relative = lambda path: branch / path.name
     else:
-        gt_root = dataset.roots["GT"] / branch
+        source_root = dataset.roots["GT"] / branch
         relative = lambda path: path.relative_to(dataset.roots["GT"])
     frames = []
-    for path in gt_root.glob("*.png"):
+    for path in source_root.glob("*.png"):
         try:
             frames.append((int(path.stem), relative(path)))
         except ValueError as error:
@@ -527,8 +589,150 @@ def preflight(args):
     if args.max_frames_per_sequence is not None:
         _, selection_report = select_evaluation_indices(dataset, args, materialize=False)
         report["selection"] = selection_report
+    report["temporal_guidance"] = {
+        "enabled": temporal_guidance_enabled(args),
+        "scale": args.temporal_guidance_scale,
+        "sampling_scope": args.temporal_sampling_scope,
+    }
     print(json.dumps(report, indent=2, sort_keys=True))
     return dataset, paths, baseline, metadata, report
+
+
+def temporal_guidance_enabled(args) -> bool:
+    return float(args.temporal_guidance_scale) > 0.0
+
+
+def load_temporal_flow_model(args):
+    """Load the frozen RAFT-Large estimator used by the legacy temporal test.
+
+    The torchvision weight enum resolves to the local Torch hub cache when it
+    is present.  Keeping the model on CPU between diffusion clips frees the
+    GPU for the substantially larger VAE/U-Net sampling graph.
+    """
+    if not temporal_guidance_enabled(args):
+        return None, None
+    from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
+
+    weights = Raft_Large_Weights.DEFAULT
+    flow_model = raft_large(weights=weights, progress=False).eval()
+    for parameter in flow_model.parameters():
+        parameter.requires_grad_(False)
+    return flow_model, weights.transforms()
+
+
+@torch.no_grad()
+def estimate_bidirectional_raft_flow(
+    *,
+    flow_model,
+    flow_transform,
+    frames_01: torch.Tensor,
+    device: torch.device,
+    batch_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Estimate adjacent RAFT forward/backward flow on RGB frames in [0, 1]."""
+    if frames_01.ndim != 4 or frames_01.shape[1] != 3:
+        raise ValueError(
+            "Temporal flow frames must have shape [T,3,H,W], got "
+            f"{tuple(frames_01.shape)}"
+        )
+    pair_count = int(frames_01.shape[0]) - 1
+    if pair_count < 1:
+        raise ValueError("Temporal guidance needs at least two sampling frames")
+    flow_model.to(device)
+    forward_flows, backward_flows = [], []
+    try:
+        for start in range(0, pair_count, int(batch_size)):
+            end = min(start + int(batch_size), pair_count)
+            previous, current = flow_transform(
+                frames_01[start:end], frames_01[start + 1 : end + 1]
+            )
+            previous = previous.to(device=device, dtype=torch.float32)
+            current = current.to(device=device, dtype=torch.float32)
+            forward_flows.append(flow_model(previous, current)[-1])
+            backward_flows.append(flow_model(current, previous)[-1])
+            del previous, current
+    finally:
+        flow_model.to("cpu")
+    return torch.cat(forward_flows, dim=0), torch.cat(backward_flows, dim=0)
+
+
+@torch.no_grad()
+def forward_backward_visibility(
+    flow_forward: torch.Tensor,
+    flow_backward: torch.Tensor,
+    *,
+    alpha: float = 0.01,
+    beta: float = 0.5,
+) -> torch.Tensor:
+    """Reject RAFT flow pairs inconsistent under forward/backward composition."""
+    warped_forward, in_bounds = temporal_backward_warp(flow_forward, flow_backward)
+    cycle_error = (flow_backward + warped_forward).square().sum(
+        dim=1, keepdim=True
+    )
+    flow_magnitude = (
+        flow_backward.square().sum(dim=1, keepdim=True)
+        + warped_forward.square().sum(dim=1, keepdim=True)
+    )
+    consistent = cycle_error <= float(alpha) * flow_magnitude + float(beta)
+    return consistent.to(dtype=flow_backward.dtype) * in_bounds
+
+
+@torch.no_grad()
+def prepare_temporal_conditions(
+    *,
+    flow_model,
+    flow_transform,
+    conditioning_frames: torch.Tensor,
+    bg_masks: torch.Tensor,
+    device: torch.device,
+    flow_batch_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    """Build the RAFT/stable-BG tensors consumed by TemporalDDIMScheduler.
+
+    ``conditioning_frames`` uses evaluator normalization [-1, 1]; RAFT's
+    torchvision transform expects [0, 1].  ``bg_masks`` is the research
+    convention M_BG=1 for degraded background.
+    """
+    frames_01 = ((conditioning_frames.detach().float() + 1.0) * 0.5).clamp(0, 1)
+    flow_forward, flow_backward = estimate_bidirectional_raft_flow(
+        flow_model=flow_model,
+        flow_transform=flow_transform,
+        frames_01=frames_01,
+        device=device,
+        batch_size=flow_batch_size,
+    )
+    visibility = forward_backward_visibility(flow_forward, flow_backward)
+    stable_bg = build_stable_bg_mask(
+        bg_masks=bg_masks.detach().to(device=device, dtype=torch.float32),
+        flow_backward=flow_backward,
+        visibility=visibility,
+        threshold=0.5,
+    )
+    stable_bg_ratio = float(stable_bg.float().mean().detach().cpu())
+    del flow_forward, visibility
+    return flow_backward, stable_bg, stable_bg_ratio
+
+
+def temporal_diagnostics(scheduler) -> Dict[str, object]:
+    """Snapshot scheduler values before clip-specific temporal state is cleared."""
+    return {
+        "enabled": bool(getattr(scheduler, "temporal_guidance_enabled", False)),
+        "last_loss": getattr(scheduler, "last_temporal_loss", None),
+        "last_raw_grad_norm": getattr(scheduler, "last_temporal_raw_grad_norm", None),
+        "last_masked_grad_norm": getattr(
+            scheduler, "last_temporal_masked_grad_norm", None
+        ),
+        "last_update_norm": getattr(scheduler, "last_temporal_update_norm", None),
+        "active_frames": int(getattr(scheduler, "last_temporal_active_frames", 0)),
+        "calls": int(getattr(scheduler, "temporal_guidance_calls", 0)),
+        "applied_steps": int(
+            getattr(scheduler, "temporal_guidance_applied_steps", 0)
+        ),
+        "skipped_steps": int(
+            getattr(scheduler, "temporal_guidance_skipped_steps", 0)
+        ),
+        "skipped_reason": getattr(scheduler, "last_temporal_skipped_reason", None),
+    }
 
 
 def load_models(args, paths, baseline, device):
@@ -547,7 +751,10 @@ def load_models(args, paths, baseline, device):
         safety_checker=None,
         requires_safety_checker=False,
     )
-    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+    scheduler_class = (
+        TemporalDDIMScheduler if temporal_guidance_enabled(args) else DDIMScheduler
+    )
+    pipe.scheduler = scheduler_class.from_config(pipe.scheduler.config)
     pipe.to(device)
 
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
@@ -894,6 +1101,20 @@ def run_contract(args, metadata) -> Dict[str, object]:
             else "every_clip_occurrence"
         ),
         "pipeline_shared_bg_mixer": False,
+        "temporal_guidance": {
+            "enabled": temporal_guidance_enabled(args),
+            "scale": args.temporal_guidance_scale,
+            "start_step": args.temporal_start_step,
+            "end_step": args.temporal_end_step,
+            "every_n_steps": args.temporal_every_n_steps,
+            "decode_chunk_size": args.temporal_decode_chunk_size,
+            "loss_scale": args.temporal_loss_scale,
+            "flow_batch_size": args.temporal_flow_batch_size,
+            "sampling_scope": args.temporal_sampling_scope,
+            "detach_previous": args.temporal_detach_previous,
+            "flow_source": "degraded conditioning RGB via frozen RAFT-Large",
+            "region": "RAFT forward-backward visible stable M_BG",
+        },
     }
 
 
@@ -954,6 +1175,7 @@ def main():
         deformation_head,
         ip_report,
     ) = load_models(args, paths, baseline, device)
+    flow_model, flow_transform = load_temporal_flow_model(args)
     (args.output_dir / "model_contract.json").write_text(
         json.dumps(
             {
@@ -979,6 +1201,15 @@ def main():
                 "mask_semantics": "M_BG=1 degraded BG; M_BG=0 HQ ROI",
                 "roi_composite": args.roi_composite,
                 "roi_blur_kernel_size": args.roi_blur_kernel_size,
+                "scheduler": type(pipe.scheduler).__name__,
+                "temporal_guidance": contract["temporal_guidance"],
+                "temporal_full_clip_policy": (
+                    "all current-window frames are sampled for temporal loss; "
+                    "only first-owner/new frame outputs are saved"
+                    if temporal_guidance_enabled(args)
+                    and args.temporal_sampling_scope == "full_clip"
+                    else "not applicable"
+                ),
             },
             indent=2,
             sort_keys=True,
@@ -1000,6 +1231,7 @@ def main():
     }
     sequence_manifest: Dict[str, Dict[str, object]] = {}
     clip_occurrence_count = 0
+    temporal_requested = temporal_guidance_enabled(args)
 
     progress_name = f"STC-v2++ {args.state_scope}/{args.offset_mode}"
     for index in tqdm(indices, desc=progress_name):
@@ -1088,6 +1320,16 @@ def main():
 
         generated_ids = set(deformation_output.generated_frame_ids)
         if was_complete and not args.overwrite:
+            if temporal_requested:
+                existing_metrics = json.loads(
+                    (clip_dir / "clip_metrics.json").read_text(encoding="utf-8")
+                )
+                existing_temporal = existing_metrics.get("temporal_guidance", {})
+                if not bool(existing_temporal.get("requested", False)):
+                    raise ValueError(
+                        "Existing clip output was created without temporal guidance. "
+                        "Use a separate --output_dir or --overwrite intentionally."
+                    )
             for frame_id in deformation_output.generated_frame_ids:
                 if args.state_scope == "sequence":
                     for kind in owner_paths:
@@ -1136,7 +1378,36 @@ def main():
         roi_masks = masks_to_pil(1.0 - sample["masks"])
         raw_new: List[Image.Image] = []
         final_new: List[Image.Image] = []
+        temporal_record: Dict[str, object] = {
+            "requested": temporal_requested,
+            "enabled": False,
+            "sampling_scope": args.temporal_sampling_scope,
+            "sampling_frame_ids": [],
+            "stable_bg_ratio": None,
+            "reason": "no newly generated frame",
+        }
         if new_indices:
+            sampling_indices = list(new_indices)
+            if temporal_requested and args.temporal_sampling_scope == "full_clip":
+                # The ordinary sequence-state path samples only unseen frames.
+                # Here include overlap rows as latent/flow context, while still
+                # discarding their newly sampled images below: first-owner
+                # outputs remain authoritative on disk.
+                sampling_indices = list(range(len(frame_ids)))
+            temporal_active = temporal_requested and len(sampling_indices) >= 2
+            temporal_record.update(
+                {
+                    "enabled": temporal_active,
+                    "sampling_frame_ids": [
+                        frame_ids[position] for position in sampling_indices
+                    ],
+                    "reason": (
+                        None
+                        if temporal_active
+                        else "fewer than two sampling frames"
+                    ),
+                }
+            )
             (
                 prompt_embeds,
                 negative_prompt_embeds,
@@ -1151,9 +1422,11 @@ def main():
                 device,
                 args.fusion_scale,
             )
-            condition_new = selected_rows(brushnet_condition, new_indices)
-            condition_cfg = torch.cat((condition_new, condition_new), dim=0)
-            shaped_noise = deformation_output.final_noise[0, new_indices].to(
+            condition_sampling = selected_rows(brushnet_condition, sampling_indices)
+            condition_cfg = torch.cat(
+                (condition_sampling, condition_sampling), dim=0
+            )
+            shaped_noise = deformation_output.final_noise[0, sampling_indices].to(
                 device=device,
                 dtype=pipe.unet.dtype,
             )
@@ -1163,35 +1436,90 @@ def main():
                 video,
                 clip_start,
             )
-            raw_new = list(
-                pipe(
-                    prompt_embeds=selected_rows(prompt_embeds, new_indices),
-                    negative_prompt_embeds=selected_rows(
-                        negative_prompt_embeds, new_indices
-                    ),
-                    image=[input_images[position] for position in new_indices],
-                    mask=[roi_masks[position] for position in new_indices],
-                    num_inference_steps=args.num_inference_steps,
-                    guidance_scale=float(args.guidance_scale),
-                    generator=torch.Generator(device=device).manual_seed(
-                        generation_seed
-                    ),
-                    latents=shaped_noise,
-                    use_shared_bg_noise=False,
-                    shared_bg_noise=None,
-                    brushnet_condition=condition_cfg,
-                    brushnet_prompt_embeds=torch.cat(
-                        (
-                            selected_rows(negative_brushnet_text, new_indices),
-                            selected_rows(brushnet_text, new_indices),
+            flow_backward = None
+            stable_bg = None
+            try:
+                if temporal_active:
+                    flow_backward, stable_bg, stable_bg_ratio = (
+                        prepare_temporal_conditions(
+                            flow_model=flow_model,
+                            flow_transform=flow_transform,
+                            conditioning_frames=selected_rows(
+                                sample["conditioning_pixel_values"],
+                                sampling_indices,
+                            ),
+                            bg_masks=selected_rows(
+                                sample["masks"], sampling_indices
+                            ),
+                            device=device,
+                            flow_batch_size=args.temporal_flow_batch_size,
+                        )
+                    )
+                    pipe.scheduler.set_temporal_guidance(
+                        decoder=pipe.vae.decode,
+                        flow_backward=flow_backward,
+                        stable_bg=stable_bg,
+                        guidance_scale=args.temporal_guidance_scale,
+                        start_step=args.temporal_start_step,
+                        end_step=args.temporal_end_step,
+                        every_n_steps=args.temporal_every_n_steps,
+                        decode_chunk_size=args.temporal_decode_chunk_size,
+                        vae_scaling_factor=pipe.vae.config.scaling_factor,
+                        loss_scale=args.temporal_loss_scale,
+                        detach_previous=args.temporal_detach_previous,
+                        loss_type="l2",
+                        enabled=True,
+                    )
+                    temporal_record["stable_bg_ratio"] = stable_bg_ratio
+                raw_sampling = list(
+                    pipe(
+                        prompt_embeds=selected_rows(prompt_embeds, sampling_indices),
+                        negative_prompt_embeds=selected_rows(
+                            negative_prompt_embeds, sampling_indices
                         ),
-                        dim=0,
-                    ),
-                    brushnet_conditioning_scale=float(
-                        args.brushnet_conditioning_scale
-                    ),
-                ).images
-            )
+                        image=[
+                            input_images[position] for position in sampling_indices
+                        ],
+                        mask=[roi_masks[position] for position in sampling_indices],
+                        num_inference_steps=args.num_inference_steps,
+                        guidance_scale=float(args.guidance_scale),
+                        generator=torch.Generator(device=device).manual_seed(
+                            generation_seed
+                        ),
+                        latents=shaped_noise,
+                        use_shared_bg_noise=False,
+                        shared_bg_noise=None,
+                        brushnet_condition=condition_cfg,
+                        brushnet_prompt_embeds=torch.cat(
+                            (
+                                selected_rows(
+                                    negative_brushnet_text, sampling_indices
+                                ),
+                                selected_rows(brushnet_text, sampling_indices),
+                            ),
+                            dim=0,
+                        ),
+                        brushnet_conditioning_scale=float(
+                            args.brushnet_conditioning_scale
+                        ),
+                    ).images
+                )
+                if temporal_active:
+                    temporal_record.update(temporal_diagnostics(pipe.scheduler))
+                    print(
+                        f"[{video}:{clip_start}] temporal guidance "
+                        f"stable_bg={temporal_record['stable_bg_ratio']:.4f} "
+                        f"loss={temporal_record['last_loss']} "
+                        f"update={temporal_record['last_update_norm']} "
+                        f"applied={temporal_record['applied_steps']}/"
+                        f"{temporal_record['calls']}"
+                    )
+            finally:
+                if temporal_active:
+                    pipe.scheduler.clear_temporal_guidance()
+                del flow_backward, stable_bg
+            images_by_position = dict(zip(sampling_indices, raw_sampling))
+            raw_new = [images_by_position[position] for position in new_indices]
             final_new = composite_images(
                 raw_new,
                 sample["conditioning_pixel_values"][new_indices],
@@ -1280,6 +1608,7 @@ def main():
                     "condition_seed": condition_seed,
                     "metrics": metrics,
                     "noise_diagnostics": diagnostics,
+                    "temporal_guidance": temporal_record,
                 },
                 indent=2,
                 sort_keys=True,

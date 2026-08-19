@@ -27,6 +27,14 @@ SAVE_NOISE_TENSORS="${SAVE_NOISE_TENSORS:-0}"
 OVERWRITE="${OVERWRITE:-0}"
 MAX_CLIPS="${MAX_CLIPS:-}"
 MAX_FRAMES_PER_SEQUENCE="${MAX_FRAMES_PER_SEQUENCE:-}"
+TEMPORAL_GUIDANCE_SCALE="${TEMPORAL_GUIDANCE_SCALE:-0}"
+TEMPORAL_START_STEP="${TEMPORAL_START_STEP:-15}"
+TEMPORAL_END_STEP="${TEMPORAL_END_STEP:-35}"
+TEMPORAL_EVERY_N_STEPS="${TEMPORAL_EVERY_N_STEPS:-1}"
+TEMPORAL_DECODE_CHUNK_SIZE="${TEMPORAL_DECODE_CHUNK_SIZE:-1}"
+TEMPORAL_LOSS_SCALE="${TEMPORAL_LOSS_SCALE:-1024}"
+TEMPORAL_FLOW_BATCH_SIZE="${TEMPORAL_FLOW_BATCH_SIZE:-2}"
+TEMPORAL_SAMPLING_SCOPE="${TEMPORAL_SAMPLING_SCOPE:-full_clip}"
 
 RUN_TIMESTAMP="${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 # Keep the log as a top-level file.  Legacy image-to-video tooling interprets
@@ -80,6 +88,14 @@ COMMON_ARGS=(
     --condition_seed "${CONDITION_SEED}"
     --generation_seed "${GENERATION_SEED}"
     --device "${DEVICE}"
+    --temporal_guidance_scale "${TEMPORAL_GUIDANCE_SCALE}"
+    --temporal_start_step "${TEMPORAL_START_STEP}"
+    --temporal_end_step "${TEMPORAL_END_STEP}"
+    --temporal_every_n_steps "${TEMPORAL_EVERY_N_STEPS}"
+    --temporal_decode_chunk_size "${TEMPORAL_DECODE_CHUNK_SIZE}"
+    --temporal_loss_scale "${TEMPORAL_LOSS_SCALE}"
+    --temporal_flow_batch_size "${TEMPORAL_FLOW_BATCH_SIZE}"
+    --temporal_sampling_scope "${TEMPORAL_SAMPLING_SCOPE}"
 )
 if [[ "${SAVE_NOISE_TENSORS}" == "1" ]]; then
     COMMON_ARGS+=(--save_noise_tensors)
