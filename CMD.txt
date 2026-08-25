@@ -83,4 +83,12 @@ tensorboard   --logdir /home/cilab/ndquan/videoInpainting/code/BrushNet/experime
 
 date -d @1785913405 (check the timestep of tensorboard)
 
-
+--- use tee to save log
+CUDA_VISIBLE_DEVICES=1,3 \
+NUM_PROCESSES=2 \
+CLIPS_PER_DEVICE=1 \
+GRADIENT_ACCUMULATION_STEPS=3 \
+SHARED_BG_NOISE_STRENGTH=0.95 \
+OUTPUT_DIR=/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/train_sharedNoise_sameBG_0.95 \
+bash examples/brushnet/run_train_brushnet_VCM_ipadapter_v8_coco_nulltext_sharedNoise_sameBG_v0_0.sh \
+2>&1 | tee -a /home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/train_sharedNoise_sameBG_0.95/terminal_logs/train_$(date +%Y%m%d_%H%M%S).log

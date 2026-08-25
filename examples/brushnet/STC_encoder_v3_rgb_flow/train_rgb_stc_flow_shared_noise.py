@@ -18,7 +18,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 THIS_DIR = Path(__file__).resolve().parent
 BRUSHNET_DIR = THIS_DIR.parent
@@ -100,6 +100,10 @@ EXPERIMENT_NAME = "rgb_stc_v3_diffusion_plus_flow"
 FLOW_INFERENCE_DEPENDENCY = False
 INFERENCE_COMPONENT = "stc_adapter"
 TRAINING_LOG_TITLE = "RGB-STC v3: L_diff + L_flow"
+# Optional variant hook.  V3/V4 leave this unset, preserving their exact loss
+# and runtime.  V4++ installs a callable returning a dataclass-like object with
+# loss/loss_forward/loss_backward and validity diagnostics.
+FEATURE_ALIGNMENT_LOSS_FN: Optional[Callable] = None
 
 
 def parse_args(input_args=None):
@@ -171,6 +175,25 @@ def parse_args(input_args=None):
         default="bg",
         help="Default bg supervises flow only where restoration is required.",
     )
+    parser.add_argument("--feature_alignment_loss_weight", type=float, default=0.0)
+    parser.add_argument("--feature_alignment_charbonnier_eps", type=float, default=1e-3)
+    parser.add_argument(
+        "--feature_alignment_region",
+        choices=("bg", "all"),
+        default="bg",
+    )
+    parser.add_argument(
+        "--feature_alignment_confidence_floor",
+        type=float,
+        default=0.1,
+        help="Minimum detached reliability weight on teacher-valid pixels.",
+    )
+    parser.add_argument(
+        "--feature_alignment_warmup_steps",
+        type=int,
+        default=0,
+        help="Linearly ramp the feature-alignment weight over this many updates.",
+    )
     parser.add_argument(
         "--init_stc_adapter",
         default=None,
@@ -238,6 +261,22 @@ def parse_args(input_args=None):
         parser.error("--flow_loss_weight must be finite and positive")
     if args.flow_charbonnier_eps <= 0.0:
         parser.error("--flow_charbonnier_eps must be positive")
+    if (
+        args.feature_alignment_loss_weight < 0.0
+        or not math.isfinite(args.feature_alignment_loss_weight)
+    ):
+        parser.error("--feature_alignment_loss_weight must be finite and non-negative")
+    if args.feature_alignment_charbonnier_eps <= 0.0:
+        parser.error("--feature_alignment_charbonnier_eps must be positive")
+    if not 0.0 <= args.feature_alignment_confidence_floor <= 1.0:
+        parser.error("--feature_alignment_confidence_floor must be in [0,1]")
+    if args.feature_alignment_warmup_steps < 0:
+        parser.error("--feature_alignment_warmup_steps must be non-negative")
+    if args.feature_alignment_loss_weight > 0.0 and FEATURE_ALIGNMENT_LOSS_FN is None:
+        parser.error(
+            "--feature_alignment_loss_weight requires a model variant that "
+            "installs FEATURE_ALIGNMENT_LOSS_FN"
+        )
     if any(value <= 0.0 for value in args.flow_max_displacement):
         parser.error("--flow_max_displacement values must be positive")
     if args.resume_from_checkpoint and args.init_stc_adapter:
@@ -344,10 +383,22 @@ def run_preflight(args):
         "teacher_flow_shape": list(sample["teacher_flow_forward"].shape),
         "flow_prediction_shape": list(zero_flow.shape),
         "flow_region": args.flow_region,
+        "feature_alignment_loss_weight": args.feature_alignment_loss_weight,
+        "feature_alignment_charbonnier_eps": args.feature_alignment_charbonnier_eps,
+        "feature_alignment_region": args.feature_alignment_region,
+        "feature_alignment_confidence_floor": args.feature_alignment_confidence_floor,
+        "feature_alignment_warmup_steps": args.feature_alignment_warmup_steps,
         "zero_flow_teacher_loss": float(flow_report.loss),
         "teacher_valid_forward_ratio": float(flow_report.valid_forward_ratio),
         "teacher_valid_backward_ratio": float(flow_report.valid_backward_ratio),
-        "loss": f"L_diff + {args.flow_loss_weight} * L_flow",
+        "loss": (
+            f"L_diff + {args.flow_loss_weight} * L_flow"
+            + (
+                f" + ramp({args.feature_alignment_loss_weight}) * L_feature"
+                if args.feature_alignment_loss_weight > 0.0
+                else ""
+            )
+        ),
         "init_stc_adapter": init_component,
         "shared_noise": {
             "rho": args.shared_bg_noise_strength,
@@ -458,6 +509,11 @@ def checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index)
         "flow_loss_weight": args.flow_loss_weight,
         "flow_charbonnier_eps": args.flow_charbonnier_eps,
         "flow_region": args.flow_region,
+        "feature_alignment_loss_weight": args.feature_alignment_loss_weight,
+        "feature_alignment_charbonnier_eps": args.feature_alignment_charbonnier_eps,
+        "feature_alignment_region": args.feature_alignment_region,
+        "feature_alignment_confidence_floor": args.feature_alignment_confidence_floor,
+        "feature_alignment_warmup_steps": args.feature_alignment_warmup_steps,
         "flow_max_displacement": list(args.flow_max_displacement),
         "flow_inference_dependency": FLOW_INFERENCE_DEPENDENCY,
         "inference_component": INFERENCE_COMPONENT,
@@ -551,6 +607,11 @@ def _resume_contract(args) -> Dict:
         "flow_loss_weight": args.flow_loss_weight,
         "flow_charbonnier_eps": args.flow_charbonnier_eps,
         "flow_region": args.flow_region,
+        "feature_alignment_loss_weight": args.feature_alignment_loss_weight,
+        "feature_alignment_charbonnier_eps": args.feature_alignment_charbonnier_eps,
+        "feature_alignment_region": args.feature_alignment_region,
+        "feature_alignment_confidence_floor": args.feature_alignment_confidence_floor,
+        "feature_alignment_warmup_steps": args.feature_alignment_warmup_steps,
         "resolution": args.resolution,
         "clip_length": args.clip_length,
         "clip_stride": args.clip_stride,
@@ -831,8 +892,12 @@ def main(args):
         args.flow_region,
     )
     logger.info(
-        "Loss: L_total=L_diff + %.6g*L_flow; flow required at inference=%s",
+        "Loss: L_total=L_diff + %.6g*L_flow + %.6g*L_feature; "
+        "feature_region=%s, feature_warmup=%d; flow required at inference=%s",
         args.flow_loss_weight,
+        args.feature_alignment_loss_weight,
+        args.feature_alignment_region,
+        args.feature_alignment_warmup_steps,
         FLOW_INFERENCE_DEPENDENCY,
     )
     logger.info("Trainable parameters: %s", f"{trainable_count:,}")
@@ -1012,7 +1077,43 @@ def main(args):
                     charbonnier_eps=args.flow_charbonnier_eps,
                 )
                 loss_flow = flow_output.loss
-                loss = loss_diff + args.flow_loss_weight * loss_flow
+                zero = loss_diff.new_zeros(())
+                feature_output = None
+                loss_feature = zero
+                feature_weight = 0.0
+                if (
+                    FEATURE_ALIGNMENT_LOSS_FN is not None
+                    and args.feature_alignment_loss_weight > 0.0
+                ):
+                    feature_output = FEATURE_ALIGNMENT_LOSS_FN(
+                        spatial_features=stc_output.spatial_features,
+                        predicted_forward=stc_output.predicted_flow_forward,
+                        predicted_backward=stc_output.predicted_flow_backward,
+                        teacher_forward=batch["teacher_flow_forward"],
+                        teacher_backward=batch["teacher_flow_backward"],
+                        bg_mask_sequence=bg_mask_sequence,
+                        valid_forward=batch["teacher_valid_forward"],
+                        valid_backward=batch["teacher_valid_backward"],
+                        alignment_confidence=stc_output.alignment_confidence,
+                        region=args.feature_alignment_region,
+                        charbonnier_eps=args.feature_alignment_charbonnier_eps,
+                        confidence_floor=args.feature_alignment_confidence_floor,
+                    )
+                    loss_feature = feature_output.loss
+                    if args.feature_alignment_warmup_steps > 0:
+                        ramp = min(
+                            1.0,
+                            float(global_step + 1)
+                            / float(args.feature_alignment_warmup_steps),
+                        )
+                    else:
+                        ramp = 1.0
+                    feature_weight = args.feature_alignment_loss_weight * ramp
+                loss = (
+                    loss_diff
+                    + args.flow_loss_weight * loss_flow
+                    + feature_weight * loss_feature
+                )
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -1037,6 +1138,18 @@ def main(args):
                 global_step += 1
                 progress.update(1)
                 if global_step % args.logging_steps == 0:
+                    if feature_output is None:
+                        feature_forward = zero
+                        feature_backward = zero
+                        feature_valid_forward = zero
+                        feature_valid_backward = zero
+                        feature_confidence = zero
+                    else:
+                        feature_forward = feature_output.loss_forward
+                        feature_backward = feature_output.loss_backward
+                        feature_valid_forward = feature_output.valid_forward_ratio
+                        feature_valid_backward = feature_output.valid_backward_ratio
+                        feature_confidence = feature_output.confidence_mean
                     metrics = torch.stack(
                         (
                             loss.detach().float(),
@@ -1049,6 +1162,13 @@ def main(args):
                             flow_output.predicted_magnitude.detach().float(),
                             stc_output.delta_bg.detach().float().abs().mean(),
                             stc_output.latent_bg_mask.detach().float().mean(),
+                            loss_feature.detach().float(),
+                            (feature_weight * loss_feature).detach().float(),
+                            feature_forward.detach().float(),
+                            feature_backward.detach().float(),
+                            feature_valid_forward.detach().float(),
+                            feature_valid_backward.detach().float(),
+                            feature_confidence.detach().float(),
                         )
                     )
                     metrics = accelerator.gather(metrics.unsqueeze(0)).mean(0)
@@ -1063,6 +1183,14 @@ def main(args):
                         "train/flow_pred_magnitude": float(metrics[7]),
                         "train/delta_abs_mean": float(metrics[8]),
                         "train/degraded_bg_ratio": float(metrics[9]),
+                        "train/loss_feature_alignment": float(metrics[10]),
+                        "train/loss_feature_alignment_weighted": float(metrics[11]),
+                        "train/loss_feature_forward": float(metrics[12]),
+                        "train/loss_feature_backward": float(metrics[13]),
+                        "train/feature_valid_forward": float(metrics[14]),
+                        "train/feature_valid_backward": float(metrics[15]),
+                        "train/feature_confidence_mean": float(metrics[16]),
+                        "train/feature_alignment_effective_weight": float(feature_weight),
                         "train/lr": float(lr_scheduler.get_last_lr()[0]),
                     }
                     if args.report_to != "none":
@@ -1071,6 +1199,7 @@ def main(args):
                         total=f"{logs['train/loss_total']:.4f}",
                         diff=f"{logs['train/loss_diff']:.4f}",
                         flow=f"{logs['train/loss_flow']:.3f}",
+                        feat=f"{logs['train/loss_feature_alignment']:.3f}",
                     )
                 if global_step % args.checkpointing_steps == 0:
                     save_training_checkpoint(
