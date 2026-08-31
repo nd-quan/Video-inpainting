@@ -23,7 +23,7 @@ from sfu_long_test_loader import (
 
 DEFAULT_OUTPUT_ROOT = Path(
     "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
-    "Generated_image/long_test_fixedBG_nulltext_v0_0"
+    "eval_sharednoise/short_test_ckpt2000"
 )
 
 
@@ -64,7 +64,7 @@ DEFAULT_BASE_MODEL = (
 )
 DEFAULT_CHECKPOINT_DIR = (
     "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
-    "checkpoint_sharedNoise_sameBG_0.9/checkpoint-2000"
+    "/train_sharedNoise_sameBG_0.95_T8/checkpoint-2000"
 )
 
 DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
@@ -74,12 +74,23 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run BrushNet + IP-Adapter inference with null-text conditioning."
     )
-    parser.add_argument("--long_test_root", type=Path, default=DEFAULT_LONG_TEST_ROOT)
+    parser.add_argument(
+        "--long_test_root",
+        type=Path,
+        default=DEFAULT_LONG_TEST_ROOT,
+        help=(
+            "Dataset root: the hierarchical SFU long-test layout or a flat "
+            "dataset/test_1 or dataset/test_2 layout."
+        ),
+    )
     parser.add_argument("--output_root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
         "--sequences",
         default=None,
-        help="Comma-separated legacy sequence names; default: all ten sequences.",
+        help=(
+            "Comma-separated legacy sequence names; default: all sequences in a "
+            "hierarchical root, or the complete sequences found in a flat root."
+        ),
     )
     parser.add_argument(
         "--preflight_only",

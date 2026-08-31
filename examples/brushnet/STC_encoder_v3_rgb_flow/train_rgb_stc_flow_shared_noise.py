@@ -30,7 +30,11 @@ import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import (
+    DistributedDataParallelKwargs,
+    ProjectConfiguration,
+    set_seed,
+)
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -104,6 +108,19 @@ TRAINING_LOG_TITLE = "RGB-STC v3: L_diff + L_flow"
 # and runtime.  V4++ installs a callable returning a dataclass-like object with
 # loss/loss_forward/loss_backward and validity diagnostics.
 FEATURE_ALIGNMENT_LOSS_FN: Optional[Callable] = None
+# Optional extension points for later model variants.  Their defaults preserve
+# the audited V3/V4/V4++ behavior exactly; V5 uses them to keep predecessor
+# context inside each shuffled/DDP-sharded sample instead of maintaining
+# unsafe mutable state across batches.
+ADD_VARIANT_ARGUMENTS_FN: Optional[Callable] = None
+MODEL_FACTORY_FN: Optional[Callable] = None
+AUGMENT_EXTRA_KWARGS_FN: Optional[Callable] = None
+EXTRA_TRAIN_METRICS_FN: Optional[Callable] = None
+POST_DATASET_VALIDATION_FN: Optional[Callable] = None
+TRAIN_DATALOADER_DROP_LAST = False
+FULL_MODEL_COMPONENT_NAME = "stc_flow_model"
+SAVE_LEGACY_STC_ADAPTER = True
+DDP_FIND_UNUSED_PARAMETERS = False
 
 
 def parse_args(input_args=None):
@@ -231,6 +248,8 @@ def parse_args(input_args=None):
     parser.add_argument("--tracker_project_name", default="train_rgb_stc_v3_flow")
     parser.add_argument("--preflight_only", action="store_true")
 
+    if ADD_VARIANT_ARGUMENTS_FN is not None:
+        ADD_VARIANT_ARGUMENTS_FN(parser)
     args = parser.parse_args(input_args)
     for name in (
         "pretrained_model_name_or_path",
@@ -418,7 +437,7 @@ def _model_weights_exist(path: Path) -> bool:
 
 
 def _is_complete_checkpoint(path: Path) -> bool:
-    model_dir = path / "stc_flow_model"
+    model_dir = path / FULL_MODEL_COMPONENT_NAME
     state_dir = path / "accelerator_state"
     state_model = any(
         (state_dir / name).is_file()
@@ -566,12 +585,12 @@ def save_training_checkpoint(
     if accelerator.is_main_process:
         bare = accelerator.unwrap_model(model)
         bare.save_pretrained(
-            checkpoint / "stc_flow_model", safe_serialization=True
+            checkpoint / FULL_MODEL_COMPONENT_NAME, safe_serialization=True
         )
-        # This smaller component is the only model needed for inference.
-        bare.stc_adapter.save_pretrained(
-            checkpoint / "stc_adapter", safe_serialization=True
-        )
+        if SAVE_LEGACY_STC_ADAPTER:
+            bare.stc_adapter.save_pretrained(
+                checkpoint / "stc_adapter", safe_serialization=True
+            )
         _json_dump(
             checkpoint / "metadata.json",
             checkpoint_metadata(
@@ -654,7 +673,7 @@ def main(args):
             path
             for path in output_path.iterdir()
             if re.fullmatch(r"checkpoint-\d+", path.name)
-            or path.name in {"stc_flow_model", "stc_adapter"}
+            or path.name in {FULL_MODEL_COMPONENT_NAME, "stc_adapter"}
         ]
     if resume_path is None and existing_results:
         raise ValueError(
@@ -671,6 +690,11 @@ def main(args):
         mixed_precision=args.mixed_precision,
         log_with=None if args.report_to == "none" else args.report_to,
         project_config=project_config,
+        kwargs_handlers=[
+            DistributedDataParallelKwargs(
+                find_unused_parameters=bool(DDP_FIND_UNUSED_PARAMETERS)
+            )
+        ],
     )
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -732,8 +756,10 @@ def main(args):
 
     if resume_path:
         model = RGBSTCFlowAdapter.from_pretrained(
-            resume_path / "stc_flow_model"
+            resume_path / FULL_MODEL_COMPONENT_NAME
         )
+    elif MODEL_FACTORY_FN is not None:
+        model = MODEL_FACTORY_FN(args)
     else:
         model = RGBSTCFlowAdapter(
             hidden_channels=args.stc_hidden_channels,
@@ -768,6 +794,12 @@ def main(args):
         brushnet.enable_gradient_checkpointing()
 
     dataset = make_dataset(args, tokenizer)
+    if POST_DATASET_VALIDATION_FN is not None:
+        POST_DATASET_VALIDATION_FN(
+            dataset=dataset,
+            args=args,
+            resume_metadata=resume_metadata,
+        )
     sampler = EpochRandomSampler(dataset, seed=args.seed)
     dataloader = DataLoader(
         dataset,
@@ -776,6 +808,7 @@ def main(args):
         collate_fn=collate_teacher_flow_clips,
         num_workers=args.dataloader_num_workers,
         pin_memory=args.dataloader_pin_memory,
+        drop_last=bool(TRAIN_DATALOADER_DROP_LAST),
     )
 
     optimizer_class = torch.optim.AdamW
@@ -909,7 +942,9 @@ def main(args):
         desc="RGB-STC-flow steps",
     )
     optimizer.zero_grad(set_to_none=True)
-    fresh_zero_identity_checked = bool(resume_path or args.init_stc_adapter)
+    fresh_zero_identity_checked = bool(
+        resume_path or args.init_stc_adapter or MODEL_FACTORY_FN is not None
+    )
     stop_training = global_step >= args.max_train_steps
     epoch = first_epoch
 
@@ -1026,6 +1061,15 @@ def main(args):
                     )
 
                 with accelerator.autocast():
+                    augment_extra_kwargs = {}
+                    if AUGMENT_EXTRA_KWARGS_FN is not None:
+                        augment_extra_kwargs = AUGMENT_EXTRA_KWARGS_FN(
+                            batch=batch,
+                            device=accelerator.device,
+                            num_clips=num_clips,
+                            num_frames=num_frames,
+                            resolution=args.resolution,
+                        )
                     brushnet_condition, stc_output, augmented_condition = (
                         augment_brushnet_condition(
                             model=model,
@@ -1034,6 +1078,7 @@ def main(args):
                             bg_mask_sequence=bg_mask_sequence,
                             injection_scale=args.stc_injection_scale,
                             predict_flow=True,
+                            **augment_extra_kwargs,
                         )
                     )
                     if not fresh_zero_identity_checked:
@@ -1193,6 +1238,32 @@ def main(args):
                         "train/feature_alignment_effective_weight": float(feature_weight),
                         "train/lr": float(lr_scheduler.get_last_lr()[0]),
                     }
+                    if EXTRA_TRAIN_METRICS_FN is not None:
+                        extra_values = EXTRA_TRAIN_METRICS_FN(
+                            stc_output=stc_output,
+                            batch=batch,
+                        )
+                        extra_names = sorted(extra_values)
+                        if extra_names:
+                            extra_tensors = torch.stack(
+                                [
+                                    torch.as_tensor(
+                                        extra_values[name],
+                                        device=accelerator.device,
+                                        dtype=torch.float32,
+                                    ).detach()
+                                    for name in extra_names
+                                ]
+                            )
+                            extra_tensors = accelerator.gather(
+                                extra_tensors.unsqueeze(0)
+                            ).mean(0)
+                            logs.update(
+                                {
+                                    name: float(value)
+                                    for name, value in zip(extra_names, extra_tensors)
+                                }
+                            )
                     if args.report_to != "none":
                         accelerator.log(logs, step=global_step)
                     progress.set_postfix(
@@ -1220,11 +1291,13 @@ def main(args):
     if accelerator.is_main_process:
         bare = accelerator.unwrap_model(model)
         bare.save_pretrained(
-            Path(args.output_dir) / "stc_flow_model", safe_serialization=True
+            Path(args.output_dir) / FULL_MODEL_COMPONENT_NAME,
+            safe_serialization=True,
         )
-        bare.stc_adapter.save_pretrained(
-            Path(args.output_dir) / "stc_adapter", safe_serialization=True
-        )
+        if SAVE_LEGACY_STC_ADAPTER:
+            bare.stc_adapter.save_pretrained(
+                Path(args.output_dir) / "stc_adapter", safe_serialization=True
+            )
         final_metadata = checkpoint_metadata(
             args, accelerator, global_step, epoch, 0
         )

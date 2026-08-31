@@ -160,7 +160,11 @@ def discover_sources(
     """Return sequence -> (clip start, clip end, frame id, image path)."""
     by_sequence: DefaultDict[str, List[Tuple[int, int, int, Path]]] = defaultdict(list)
     for clip_dir in sorted(path for path in eval_root.iterdir() if path.is_dir()):
-        if clip_dir.name == "videos":
+        # Evaluation roots can also contain auxiliary folders (for example,
+        # ``terminal_logs`` and the generated ``videos`` folder).  Only
+        # evaluator clip directories follow the required name convention.
+        if CLIP_DIRECTORY_PATTERN.fullmatch(clip_dir.name) is None:
+            print(f"Skipping non-clip directory: {clip_dir}")
             continue
         sequence, start, end = parse_clip_directory(clip_dir)
         frames = read_clip_frames(clip_dir, frame_kind)

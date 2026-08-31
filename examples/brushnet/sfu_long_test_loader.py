@@ -1,4 +1,10 @@
-"""Shared loader for the ten legacy-named SFU long-test sequences."""
+"""Load legacy SFU test sequences from hierarchical or flat dataset roots.
+
+The long-test dataset uses ``input/Class_X/<source>`` and
+``mask/Class_X/<source>``.  The legacy ``dataset/test_1`` and ``test_2``
+exports instead use ``<label>/inputs`` and ``<label>/masks``.  This module
+accepts either layout without requiring symlinks or copied frames.
+"""
 
 from __future__ import annotations
 
@@ -94,6 +100,46 @@ def _numeric_pngs(directory: Path) -> Tuple[Tuple[Path, ...], Tuple[int, ...]]:
     return paths, frame_ids
 
 
+def _detect_layout(root: Path) -> str:
+    """Return the supported layout at ``root`` with actionable errors."""
+    hierarchical_markers = (root / "input", root / "mask")
+    if any(path.exists() for path in hierarchical_markers):
+        return "hierarchical"
+
+    flat_markers = tuple(
+        root / spec.label / subdirectory
+        for spec in LONG_SEQUENCE_SPECS
+        for subdirectory in ("inputs", "masks")
+    )
+    if any(path.exists() for path in flat_markers):
+        return "flat"
+
+    raise FileNotFoundError(
+        f"Unsupported or missing dataset root: {root}. Expected either "
+        "input/Class_X/<sequence> plus mask/Class_X/<sequence>, or "
+        "<sequence>/inputs plus <sequence>/masks."
+    )
+
+
+def _flat_specs_present(root: Path, specs: Sequence[SequenceSpec]) -> List[SequenceSpec]:
+    """Return only complete flat-layout sequences available at ``root``."""
+    present = []
+    for spec in specs:
+        sequence_root = root / spec.label
+        if (sequence_root / "inputs").is_dir() and (sequence_root / "masks").is_dir():
+            present.append(spec)
+    return present
+
+
+def _sequence_directories(root: Path, spec: SequenceSpec, layout: str) -> Tuple[Path, Path]:
+    if layout == "hierarchical":
+        return (
+            root / "input" / spec.class_name / spec.source_name,
+            root / "mask" / spec.class_name / spec.source_name,
+        )
+    return root / spec.label / "inputs", root / spec.label / "masks"
+
+
 def load_sequences(
     long_test_root: Path,
     output_root: Path,
@@ -101,10 +147,19 @@ def load_sequences(
 ) -> List[SequenceData]:
     long_test_root = Path(long_test_root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
+    layout = _detect_layout(long_test_root)
+    specs = select_specs(names)
+    if layout == "flat" and names is None:
+        specs = _flat_specs_present(long_test_root, specs)
+        if not specs:
+            raise FileNotFoundError(
+                f"No complete <sequence>/inputs and <sequence>/masks pairs found in: "
+                f"{long_test_root}"
+            )
+
     loaded = []
-    for spec in select_specs(names):
-        image_dir = long_test_root / "input" / spec.class_name / spec.source_name
-        mask_dir = long_test_root / "mask" / spec.class_name / spec.source_name
+    for spec in specs:
+        image_dir, mask_dir = _sequence_directories(long_test_root, spec, layout)
         image_paths, frame_ids = _numeric_pngs(image_dir)
         mask_paths, mask_frame_ids = _numeric_pngs(mask_dir)
         image_names = tuple(path.name for path in image_paths)

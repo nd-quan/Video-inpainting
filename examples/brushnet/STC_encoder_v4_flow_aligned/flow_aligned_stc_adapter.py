@@ -39,7 +39,7 @@ except ModuleNotFoundError:  # Imported as examples.brushnet.STC_encoder_v4_flow
         SharedDirectionalFlowHead,
     )
 
-
+ 
 def _flow_bounds(value: Sequence[float]) -> Tuple[float, float]:
     if isinstance(value, (int, float)):
         result = (float(value), float(value))
