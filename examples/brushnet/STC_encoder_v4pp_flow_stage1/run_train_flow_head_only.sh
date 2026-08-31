@@ -66,6 +66,7 @@ else
     --multi_gpu \
     --num_processes "${NUM_PROCESSES}" \
     --num_machines 1 \
+    --main_process_port "${MAIN_PROCESS_PORT:-29501}" \
     --mixed_precision "${MIXED_PRECISION}" \
     --dynamo_backend no \
     "${SCRIPT_DIR}/train_flow_head_only.py" \

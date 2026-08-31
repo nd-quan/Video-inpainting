@@ -18,7 +18,7 @@ import math
 import random
 import sys
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -67,6 +67,11 @@ DEFAULT_OUTPUT = (
     PROJECT_ROOT / "experiments" / "eval_rgb_stc_v2" / "valid" / "checkpoint-2000-sTCE-0.7-sBG-1"
 )
 DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+
+# Optional variant hooks. Existing V2--V5 entry points leave both unset and
+# therefore preserve their argument and conditioning contracts.
+ADD_EVALUATION_ARGUMENTS_FN: Optional[Callable] = None
+CONDITION_EXTRA_KWARGS_FN: Optional[Callable] = None
 
 
 def parse_args():
@@ -133,6 +138,8 @@ def parse_args():
     parser.add_argument("--save_references", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--preflight_only", action="store_true")
+    if ADD_EVALUATION_ARGUMENTS_FN is not None:
+        ADD_EVALUATION_ARGUMENTS_FN(parser)
     args = parser.parse_args()
     if args.resolution <= 0 or args.resolution % 8:
         parser.error("--resolution must be positive and divisible by 8")
@@ -700,6 +707,9 @@ def main():
             device,
             args.fusion_scale,
         )
+        condition_extra_kwargs = {}
+        if CONDITION_EXTRA_KWARGS_FN is not None:
+            condition_extra_kwargs = CONDITION_EXTRA_KWARGS_FN(args)
         brushnet_condition, condition_stats = build_stc_condition(
             pipe,
             adapter,
@@ -707,6 +717,7 @@ def main():
             device,
             condition_seed,
             args.stc_injection_scale,
+            **condition_extra_kwargs,
         )
         input_frames = sample["conditioning_pixel_values"]
         bg_mask = sample["masks"]

@@ -116,6 +116,16 @@ ADD_VARIANT_ARGUMENTS_FN: Optional[Callable] = None
 MODEL_FACTORY_FN: Optional[Callable] = None
 AUGMENT_EXTRA_KWARGS_FN: Optional[Callable] = None
 EXTRA_TRAIN_METRICS_FN: Optional[Callable] = None
+# Optional differentiable variant loss.  The callable runs before backward and
+# returns an object exposing ``loss`` plus an optional ``metrics`` mapping.
+# Keeping this separate from EXTRA_TRAIN_METRICS_FN is important: metrics are
+# evaluated only after the optimizer update and therefore cannot train a
+# variant-specific branch.
+EXTRA_TRAIN_LOSS_FN: Optional[Callable] = None
+# Optional stage-specific trainability policy.  It is installed before the
+# optimizer and DDP wrapper are created, so exact resume keeps one fixed graph
+# and one fixed optimizer schema for the lifetime of a run.
+CONFIGURE_TRAINABLE_PARAMETERS_FN: Optional[Callable] = None
 POST_DATASET_VALIDATION_FN: Optional[Callable] = None
 TRAIN_DATALOADER_DROP_LAST = False
 FULL_MODEL_COMPONENT_NAME = "stc_flow_model"
@@ -789,6 +799,8 @@ def main(args):
     ):
         module.requires_grad_(False)
     model.requires_grad_(True)
+    if CONFIGURE_TRAINABLE_PARAMETERS_FN is not None:
+        CONFIGURE_TRAINABLE_PARAMETERS_FN(model=model, args=args)
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
         brushnet.enable_gradient_checkpointing()
@@ -818,8 +830,13 @@ def main(args):
         except ImportError as error:
             raise ImportError("Install bitsandbytes for --use_8bit_adam") from error
         optimizer_class = bnb.optim.AdamW8bit
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    if not trainable_parameters:
+        raise RuntimeError("The selected training stage has no trainable parameters")
     optimizer = optimizer_class(
-        model.parameters(),
+        trainable_parameters,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -883,7 +900,7 @@ def main(args):
     }
     model_ids = {id(parameter) for parameter in model.parameters() if parameter.requires_grad}
     if optimizer_ids != model_ids:
-        raise RuntimeError("Optimizer must contain exactly RGB-STC + flow-head parameters")
+        raise RuntimeError("Optimizer must contain exactly the selected model parameters")
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     if accelerator.is_main_process and args.report_to != "none":
@@ -1154,15 +1171,31 @@ def main(args):
                     else:
                         ramp = 1.0
                     feature_weight = args.feature_alignment_loss_weight * ramp
+                extra_loss_output = None
+                loss_extra = zero
+                if EXTRA_TRAIN_LOSS_FN is not None:
+                    extra_loss_output = EXTRA_TRAIN_LOSS_FN(
+                        stc_output=stc_output,
+                        batch=batch,
+                        bg_mask_sequence=bg_mask_sequence,
+                        args=args,
+                        global_step=global_step,
+                    )
+                    loss_extra = extra_loss_output.loss
+                    if loss_extra.ndim != 0 or not loss_extra.is_floating_point():
+                        raise ValueError("Variant extra loss must be a floating scalar")
                 loss = (
                     loss_diff
                     + args.flow_loss_weight * loss_flow
                     + feature_weight * loss_feature
+                    + loss_extra
                 )
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    accelerator.clip_grad_norm_(
+                        trainable_parameters, args.max_grad_norm
+                    )
                 scale_before = None
                 if accelerator.sync_gradients and accelerator.scaler is not None:
                     scale_before = float(accelerator.scaler.get_scale())
@@ -1236,8 +1269,38 @@ def main(args):
                         "train/feature_valid_backward": float(metrics[15]),
                         "train/feature_confidence_mean": float(metrics[16]),
                         "train/feature_alignment_effective_weight": float(feature_weight),
+                        "train/loss_variant_extra": float(
+                            loss_extra.detach().float()
+                        ),
                         "train/lr": float(lr_scheduler.get_last_lr()[0]),
                     }
+                    if extra_loss_output is not None:
+                        extra_loss_metrics = getattr(
+                            extra_loss_output, "metrics", {}
+                        )
+                        extra_loss_names = sorted(extra_loss_metrics)
+                        if extra_loss_names:
+                            extra_loss_tensors = torch.stack(
+                                [
+                                    torch.as_tensor(
+                                        extra_loss_metrics[name],
+                                        device=accelerator.device,
+                                        dtype=torch.float32,
+                                    ).detach()
+                                    for name in extra_loss_names
+                                ]
+                            )
+                            extra_loss_tensors = accelerator.gather(
+                                extra_loss_tensors.unsqueeze(0)
+                            ).mean(0)
+                            logs.update(
+                                {
+                                    name: float(value)
+                                    for name, value in zip(
+                                        extra_loss_names, extra_loss_tensors
+                                    )
+                                }
+                            )
                     if EXTRA_TRAIN_METRICS_FN is not None:
                         extra_values = EXTRA_TRAIN_METRICS_FN(
                             stc_output=stc_output,
