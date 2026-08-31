@@ -14,10 +14,9 @@
 
 # DISCLAIMER: This code is strongly influenced by https://github.com/pesser/pytorch_diffusion
 # and https://github.com/hojonathanho/diffusion
-import shutil
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -26,111 +25,56 @@ from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from ..utils.torch_utils import randn_tensor
 from .scheduling_utils import KarrasDiffusionSchedulers, SchedulerMixin
-import sys
-
-import uuid
 import os
-# from ..utils import logger
-from loguru import logger
-# sys.path.insert(1, '/media/ssd1/daole/sd_scripts/VVC_Python') #Le언니 경로로 아예바꿈(ws09전용일듯)
-sys.path.insert(1,'/media/ssd1/ndquan/model_naeun/paper/VVC_Python') # 512 전용
-import VVC
 
-_DEFAULT_CGE_VVC_ENCODER = "/media/ssd1/ndquan/TGDR/VVC/vvencFFapp"
-_cge_vvc_encoder = os.environ.get("CGE_VVC_ENCODER", _DEFAULT_CGE_VVC_ENCODER)
-if os.path.exists(_cge_vvc_encoder):
-    VVC.EXECUTABLE_FILE_NAME = _cge_vvc_encoder
+def _codec_roundtrip01(codec: Any, image: torch.Tensor, call_key: str) -> torch.Tensor:
+    """Call the injected codec and enforce the CGE tensor contract."""
 
-# 로그와 이미지 저장 폴더 지정
-log_root = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/logs"
-save_dir_ = os.path.join(log_root, "vvc")
-
-# 폴더 생성
-os.makedirs(save_dir_, exist_ok=True)
-
-# 로그 파일 저장 위치 설정 (1줄이면 끝!)
-logger.add(os.path.join(log_root, "log.txt"))
-
-# 로그 메시지 테스트
-logger.info("저장 폴더: {}", save_dir_)
+    if codec is None:
+        raise RuntimeError(
+            "CGE codec is not configured. Set scheduler.cge_codec to an object "
+            "providing roundtrip01(image_chw, call_key=...)."
+        )
+    roundtrip = getattr(codec, "roundtrip01", None)
+    if roundtrip is None:
+        raise TypeError("scheduler.cge_codec must provide a roundtrip01 method")
+    output = roundtrip(image, call_key=call_key)
+    if not isinstance(output, torch.Tensor):
+        raise TypeError(f"CGE codec returned {type(output)!r}, expected torch.Tensor")
+    if output.shape != image.shape:
+        raise ValueError(
+            f"CGE codec changed tensor shape from {tuple(image.shape)} to {tuple(output.shape)}"
+        )
+    return output.to(device=image.device, dtype=image.dtype)
 
 
-# def grad_VVC(x_in , x_lr, maskBG, batchIdx, curStep, fast=False):
-#     x_in = x_in[batchIdx]
-#     maskBG = maskBG[batchIdx]
-#     x_lr   = x_lr[batchIdx]
+def grad_codec(x_in, x_lr, maskBG, curStep, codec, call_key):
+    """Finite-difference CGE image gradient using an injected codec operator."""
 
-#     h = 16/255
-#     perturb =torch.ones_like(x_in).cuda()
-#     x_in_h_fw = x_in + h*perturb
-#     x_in_h_fw = torch.clamp(x_in_h_fw, -1, 1)
-
-#     x_in_h_bw = x_in - h*perturb
-#     x_in_h_bw = torch.clamp(x_in_h_bw, -1, 1)
-
-#     # if fast==True:
-#     #     save_dir_ = os.path.join(logger.get_dir(), 'vvc',  'batch_' + str(batchIdx))
-
-#     #     task1 = thread_pool.apply_async(VVC.vvc_func, args=(((x_in+1)/2), curStep, os.path.join(save_dir_, '0')))
-#     #     task2 = thread_pool.apply_async(VVC.vvc_func, args=(((x_in_h_fw+1)/2), curStep, os.path.join(save_dir_, '1')))
-#     #     task3 = thread_pool.apply_async(VVC.vvc_func, args=(((x_in_h_bw+1)/2), curStep, os.path.join(save_dir_, '2')))
-
-#     #     x_in_degarded = task1.get()
-#     #     x_in_lr_h_fw = task2.get()
-#     #     x_in_lr_h_bw = task3.get()
-
-#     # else:
-#     save_dir_ = os.path.join(logger.get_dir(), 'vvc',  'batch_' + str(batchIdx))
-#     # save_dir_ = os.path.join(logger.get_dir(), 'vvc')
-
-#     x_in_degarded = VVC.vvc_func(((x_in+1)/2), curStep, save_dir_)
-#     x_in_lr_h_fw = VVC.vvc_func_h(((x_in_h_fw+1)/2), curStep, save_dir_)
-#     x_in_lr_h_bw = VVC.vvc_func_h(((x_in_h_bw+1)/2), curStep, save_dir_)
-
-#     grad_Dx = 2*maskBG*(x_in_degarded - ((x_lr+1)/2))
-#     grad_x = (x_in_lr_h_fw - x_in_lr_h_bw)*perturb/(2*h)
-#     grad_BG = grad_Dx*grad_x
-
-#     return  grad_BG, (x_in_degarded*2 - 1) #to range [-1, 1]
-
-def grad_VVC(x_in, x_lr, maskBG, curStep, fast=False):
     h = 16 / 255
     perturb = torch.ones_like(x_in)
 
     x_in_h_fw = torch.clamp(x_in + h * perturb, -1, 1)
     x_in_h_bw = torch.clamp(x_in - h * perturb, -1, 1)
 
-    # 🔑 고유한 폴더 생성 (충돌 방지)
-    log_root = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/logs"  # 상단에 이미 정의되어 있음
-    save_dir_ = os.path.join(log_root, 'vvc', str(uuid.uuid4())[:8])
-    # save_dir_ = os.path.join(logger.get_dir(), 'vvc', str(uuid.uuid4())[:8])
-    os.makedirs(save_dir_, exist_ok=True)
-
-    success = False
-    try:
-        x_in_degraded = VVC.vvc_func_512(((x_in + 1) / 2), curStep, save_dir_)
-        x_in_lr_h_fw = VVC.vvc_func_h_512(((x_in_h_fw + 1) / 2), curStep, save_dir_)
-        x_in_lr_h_bw = VVC.vvc_func_h_512(((x_in_h_bw + 1) / 2), curStep, save_dir_)
-        success = True
-    except FileNotFoundError as exc:
-        existing_files = sorted(os.listdir(save_dir_)) if os.path.exists(save_dir_) else []
-        raise RuntimeError(
-            "VVC failed to create the expected reconstruction file. "
-            f"encoder={getattr(VVC, 'EXECUTABLE_FILE_NAME', 'unknown')}, "
-            f"work_dir={save_dir_}, existing_files={existing_files}"
-        ) from exc
-    finally:
-        if success and not _env_flag("CGE_KEEP_VVC_LOGS", "0"):
-            # VVC 폴더에 저장안되게 바로 삭제
-            shutil.rmtree(save_dir_, ignore_errors=True)
+    x_in_degraded = _codec_roundtrip01(
+        codec, ((x_in + 1) / 2).clamp(0, 1), f"{call_key}_base"
+    )
+    x_in_lr_h_fw = _codec_roundtrip01(
+        codec, ((x_in_h_fw + 1) / 2).clamp(0, 1), f"{call_key}_plus"
+    )
+    x_in_lr_h_bw = _codec_roundtrip01(
+        codec, ((x_in_h_bw + 1) / 2).clamp(0, 1), f"{call_key}_minus"
+    )
     
     grad_Dx = 2 * maskBG * (x_in_degraded - ((x_lr + 1) / 2))
     grad_x = (x_in_lr_h_fw - x_in_lr_h_bw) * perturb / (2 * h)
     grad_BG = grad_Dx * grad_x
 
     return grad_BG, (x_in_degraded * 2 - 1)  # range [-1, 1]
-  
-def grad_VVC_batch_parallel(x_in, x_lr, maskBG, curStep):
+
+
+def grad_codec_batch(x_in, x_lr, maskBG, curStep, codec, call_prefix):
     from multiprocessing.pool import ThreadPool
 
     N = x_in.shape[0]
@@ -145,18 +89,41 @@ def grad_VVC_batch_parallel(x_in, x_lr, maskBG, curStep):
         else:
             raise ValueError(f"maskBG batch size {maskBG.shape[0]} does not match x_in batch size {N}.")
 
-    num_workers = min(N, int(os.environ.get("CGE_VVC_WORKERS", "2")))
+    configured_workers = int(
+        os.environ.get("CGE_CODEC_WORKERS", str(getattr(codec, "max_parallel", 1)))
+    )
+    num_workers = min(N, max(1, configured_workers))
     grad_BG_batch = [None] * N
     x_in_degraded_batch = [None] * N
 
-    with ThreadPool(processes=max(1, num_workers)) as thread_pool:
-        tasks = [
-            thread_pool.apply_async(grad_VVC, args=(x_in[i], x_lr[i], maskBG[i], curStep, False))
-            for i in range(N)
-        ]
-
+    if num_workers == 1:
         for i in range(N):
-            grad_BG_batch[i], x_in_degraded_batch[i] = tasks[i].get()
+            grad_BG_batch[i], x_in_degraded_batch[i] = grad_codec(
+                x_in[i],
+                x_lr[i],
+                maskBG[i],
+                curStep,
+                codec,
+                f"{call_prefix}_b{i:02d}",
+            )
+    else:
+        with ThreadPool(processes=num_workers) as thread_pool:
+            tasks = [
+                thread_pool.apply_async(
+                    grad_codec,
+                    args=(
+                        x_in[i],
+                        x_lr[i],
+                        maskBG[i],
+                        curStep,
+                        codec,
+                        f"{call_prefix}_b{i:02d}",
+                    ),
+                )
+                for i in range(N)
+            ]
+            for i in range(N):
+                grad_BG_batch[i], x_in_degraded_batch[i] = tasks[i].get()
 
     grad_BG_batch = torch.stack(grad_BG_batch, dim=0)
     x_in_degraded_batch = torch.stack(x_in_degraded_batch, dim=0)
@@ -164,13 +131,14 @@ def grad_VVC_batch_parallel(x_in, x_lr, maskBG, curStep):
     return grad_BG_batch, x_in_degraded_batch
 
 
-def decode_with_chunks(decoder, x0, chunk_size=1):
+def decode_with_chunks(decoder, x0, chunk_size=1, scaling_factor=1.0):
+    decoder_input = x0 / float(scaling_factor)
     if chunk_size is None or chunk_size <= 0 or chunk_size >= x0.shape[0]:
-        return decoder(x0).sample
+        return decoder(decoder_input).sample
 
     decoded = []
     for start in range(0, x0.shape[0], chunk_size):
-        decoded.append(decoder(x0[start:start + chunk_size]).sample)
+        decoded.append(decoder(decoder_input[start:start + chunk_size]).sample)
     return torch.cat(decoded, dim=0)
 
 
@@ -197,35 +165,56 @@ def project_l2_ball(tensor: torch.FloatTensor, radius: float) -> torch.FloatTens
 
 def cond_fn(x0, t, x_lr, mask, decoder, args=None):
     with torch.enable_grad():
-
         guidance_scale = float(getattr(args, "guidance_scale_cge", os.environ.get("CGE_GUIDANCE_SCALE", "0.0001")))
         per_frame_cge = _as_bool(getattr(args, "per_frame_cge", _env_flag("CGE_PER_FRAME", "0")))
+        scaling_factor = float(getattr(args, "vae_scaling_factor", 1.0))
+        codec = getattr(args, "cge_codec", None)
+        timestep_value = int(t.item()) if isinstance(t, torch.Tensor) else int(t)
+        eval_index = int(getattr(args, "cge_codec_eval_count", 0))
+        if args is not None:
+            args.cge_codec_eval_count = eval_index + 1
+        call_prefix = f"eval{eval_index:06d}_t{timestep_value:04d}"
 
         if per_frame_cge and x0.shape[0] > 1:
             grads = []
             for batch_idx in range(x0.shape[0]):
                 x0_i = x0[batch_idx:batch_idx + 1].detach().requires_grad_(True)
-                x_lr_i = x_lr[batch_idx:batch_idx + 1]
-                mask_i = mask[batch_idx:batch_idx + 1]
+                x_lr_i = x_lr[batch_idx:batch_idx + 1] if x_lr.shape[0] > 1 else x_lr[:1]
+                mask_i = mask[batch_idx:batch_idx + 1] if mask.shape[0] > 1 else mask[:1]
 
-                I_hat_i = decoder(x0_i).sample
+                I_hat_i = decode_with_chunks(
+                    decoder, x0_i, chunk_size=1, scaling_factor=scaling_factor
+                )
 
                 roi_loss_i = torch.sum((((x_lr_i + 1) / 2 - (I_hat_i + 1) / 2) * mask_i) ** 2)
                 grad_roi_i = torch.autograd.grad(roi_loss_i, x0_i, retain_graph=True)[0]
 
                 mask_bg_i = 1 - mask_i
-                grad_bg_i, _ = grad_VVC_batch_parallel(
+                grad_bg_image_i, _ = grad_codec_batch(
                     I_hat_i.detach(),
                     x_lr_i.detach(),
                     mask_bg_i.detach(),
-                    t.item(),
+                    timestep_value,
+                    codec,
+                    f"{call_prefix}_pf{batch_idx:02d}",
                 )
-
-                I_hat_i.backward(gradient=grad_bg_i, retain_graph=False)
-                grad_bg_i = x0_i.grad.clone()
+                grad_bg_i = torch.autograd.grad(
+                    outputs=I_hat_i,
+                    inputs=x0_i,
+                    grad_outputs=grad_bg_image_i,
+                    retain_graph=False,
+                )[0]
                 grads.append(grad_roi_i + grad_bg_i)
 
-                del x0_i, x_lr_i, mask_i, I_hat_i, grad_roi_i, grad_bg_i
+                del (
+                    x0_i,
+                    x_lr_i,
+                    mask_i,
+                    I_hat_i,
+                    grad_roi_i,
+                    grad_bg_image_i,
+                    grad_bg_i,
+                )
 
             raw_grad = torch.cat(grads, dim=0).to(dtype=x0.dtype)
             if args is not None:
@@ -234,34 +223,31 @@ def cond_fn(x0, t, x_lr, mask, decoder, args=None):
 
         x0 = x0.detach().requires_grad_(True)
 
-        # # 1. 디코딩 (latent → image)
-        # start = time.time()
         decode_chunk_size = int(getattr(args, "decode_chunk_size", os.environ.get("CGE_DECODE_CHUNK_SIZE", "1")))
-        I_hat = decode_with_chunks(decoder, x0, decode_chunk_size)
-        # end = time.time()
-        # print(f"[Timi/g] Decode (latent → image): {end - start:.4f}s")
+        I_hat = decode_with_chunks(
+            decoder, x0, decode_chunk_size, scaling_factor=scaling_factor
+        )
         
-        # # 2. ROI gradient
-        # start = time.time()
         roi_loss = torch.sum((((x_lr+ 1) / 2 - (I_hat + 1) / 2) * mask) ** 2) # 이거 I_hat이랑 x_lr 위치 주의
         grad_roi = torch.autograd.grad(roi_loss, x0, retain_graph=True)[0]
         
-        # # 3. BG gradient (ZOO-box or VVC degradation 등)
-        # start = time.time()
         mask_bg = 1 - mask
-        grad_bg, _ = grad_VVC_batch_parallel(
+        grad_bg_image, _ = grad_codec_batch(
             I_hat.detach(),
             x_lr.detach(),
             mask_bg.detach(),
-            t.item(),
+            timestep_value,
+            codec,
+            call_prefix,
         )
-        
-        # # 3.1 BG gradient 이어서 계산
-        # # backward 방식
-        I_hat.backward(gradient=grad_bg, retain_graph=False)  # ∂L/∂I × ∂I/∂x0
-        grad_bg = x0.grad.clone()  # 이제0 grad_bg = ∂L/∂x0 (latent에 대한 gradient!)
 
-        # 5. Gradient from ∇I → ∇z (by backprop from decoder)
+        grad_bg = torch.autograd.grad(
+            outputs=I_hat,
+            inputs=x0,
+            grad_outputs=grad_bg_image,
+            retain_graph=False,
+        )[0]
+
         raw_grad = (grad_roi + grad_bg).to(dtype=x0.dtype)
         if args is not None:
             args.last_cge_raw_grad = raw_grad.detach()

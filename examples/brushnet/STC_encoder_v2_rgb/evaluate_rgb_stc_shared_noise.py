@@ -72,6 +72,13 @@ DEFAULT_IMAGE_ENCODER = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
 # therefore preserve their argument and conditioning contracts.
 ADD_EVALUATION_ARGUMENTS_FN: Optional[Callable] = None
 CONDITION_EXTRA_KWARGS_FN: Optional[Callable] = None
+# Optional inference hooks for variants that need to configure a scheduler or
+# another clip-local inference component immediately around ``pipe(...)``.
+# Hooks are intentionally unset for V2--V5's standard evaluator, retaining
+# the original DDIM evaluation path byte-for-byte when no variant installs one.
+BEFORE_PIPELINE_CALL_FN: Optional[Callable] = None
+AFTER_PIPELINE_CALL_FN: Optional[Callable] = None
+CLEAR_PIPELINE_CALL_FN: Optional[Callable] = None
 
 
 def parse_args():
@@ -742,24 +749,47 @@ def main():
             device=device,
             dtype=pipe.unet.dtype,
         )
-        generated = pipe(
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            image=input_images,
-            mask=raw_roi_masks,
-            num_inference_steps=args.num_inference_steps,
-            guidance_scale=float(args.guidance_scale),
-            latents=independent_noise,
-            use_shared_bg_noise=True,
-            shared_bg_noise=shared_noise,
-            shared_bg_noise_strength=float(args.shared_bg_noise_strength),
-            variance_preserving_shared_noise=True,
-            brushnet_condition=brushnet_condition,
-            brushnet_prompt_embeds=torch.cat(
-                (negative_brushnet_text, brushnet_text), dim=0
-            ),
-            brushnet_conditioning_scale=float(args.brushnet_conditioning_scale),
-        ).images
+        inference_stats: Dict[str, object] = {}
+        try:
+            if BEFORE_PIPELINE_CALL_FN is not None:
+                result = BEFORE_PIPELINE_CALL_FN(
+                    pipe=pipe,
+                    sample=sample,
+                    args=args,
+                    device=device,
+                )
+                if result:
+                    inference_stats.update(result)
+            generated = pipe(
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                image=input_images,
+                mask=raw_roi_masks,
+                num_inference_steps=args.num_inference_steps,
+                guidance_scale=float(args.guidance_scale),
+                latents=independent_noise,
+                use_shared_bg_noise=True,
+                shared_bg_noise=shared_noise,
+                shared_bg_noise_strength=float(args.shared_bg_noise_strength),
+                variance_preserving_shared_noise=True,
+                brushnet_condition=brushnet_condition,
+                brushnet_prompt_embeds=torch.cat(
+                    (negative_brushnet_text, brushnet_text), dim=0
+                ),
+                brushnet_conditioning_scale=float(args.brushnet_conditioning_scale),
+            ).images
+            if AFTER_PIPELINE_CALL_FN is not None:
+                result = AFTER_PIPELINE_CALL_FN(
+                    pipe=pipe,
+                    sample=sample,
+                    args=args,
+                    device=device,
+                )
+                if result:
+                    inference_stats.update(result)
+        finally:
+            if CLEAR_PIPELINE_CALL_FN is not None:
+                CLEAR_PIPELINE_CALL_FN(pipe=pipe)
         final = composite_images(
             generated,
             input_frames,
@@ -770,6 +800,7 @@ def main():
         metrics = compute_metrics(final, sample["pixel_values"], bg_mask)
         metrics.update({f"raw_{key}": value for key, value in compute_metrics(generated, sample["pixel_values"], bg_mask).items()})
         metrics.update(condition_stats)
+        metrics.update(inference_stats)
         output.mkdir(parents=True, exist_ok=True)
         save_images(generated, output / "raw", frame_ids)
         save_images(final, output / "final", frame_ids)

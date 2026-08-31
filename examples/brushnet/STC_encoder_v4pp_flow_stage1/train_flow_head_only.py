@@ -26,6 +26,7 @@ import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoTokenizer, CLIPImageProcessor
 
 
@@ -80,6 +81,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adam_epsilon", type=float, default=1e-8)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--flow_charbonnier_eps", type=float, default=1e-3)
+    parser.add_argument(
+        "--large_motion_threshold",
+        type=float,
+        default=0.5,
+        help="Teacher-flow magnitude threshold in STC feature-grid pixels.",
+    )
+    parser.add_argument(
+        "--motion_loss_region",
+        choices=("bg", "all"),
+        default="bg",
+        help="Region for large-motion, direction, and magnitude auxiliaries.",
+    )
+    parser.add_argument("--large_motion_loss_weight", type=float, default=0.0)
+    parser.add_argument("--direction_loss_weight", type=float, default=0.0)
+    parser.add_argument("--magnitude_loss_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--direction_norm_eps",
+        type=float,
+        default=0.05,
+        help="Smooth norm (feature-grid pixels) used by the cosine direction loss.",
+    )
+    parser.add_argument(
+        "--best_metric",
+        choices=("auto", "epe", "large_motion_epe", "composite"),
+        default="auto",
+        help="Checkpoint selection target; auto uses composite when auxiliaries are on.",
+    )
+    parser.add_argument(
+        "--best_all_epe_weight",
+        type=float,
+        default=0.25,
+        help="All-region EPE coefficient in the composite checkpoint score.",
+    )
+    parser.add_argument(
+        "--tensorboard_dir",
+        type=Path,
+        default=None,
+        help="TensorBoard event directory; defaults to OUTPUT_DIR/tensorboard.",
+    )
     parser.add_argument("--mixed_precision", choices=("no", "fp16", "bf16"), default="fp16")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--resume_from_checkpoint", default=None)
@@ -185,7 +225,107 @@ def batch_tensors(batch, args, device):
     return clips, rgb, bg, teacher
 
 
-def compute_outputs(model, rgb, bg, teacher, args):
+def weighted_mean(value: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Mean over a [B,P,1,H,W] validity/region mask."""
+    return (value.float() * weight.float()).sum() / weight.float().sum().clamp_min(1e-6)
+
+
+def motion_region_masks(
+    bg: torch.Tensor,
+    valid_forward: torch.Tensor,
+    valid_backward: torch.Tensor,
+    teacher_forward: torch.Tensor,
+    teacher_backward: torch.Tensor,
+    args: argparse.Namespace,
+):
+    """Build direction-specific valid and large-motion masks at flow resolution."""
+    batch, pairs, _, height, width = teacher_forward.shape
+    if args.motion_loss_region == "bg":
+        feature_bg = torch.nn.functional.interpolate(
+            bg.flatten(0, 1).float(), size=(height, width), mode="nearest"
+        ).reshape(batch, pairs + 1, 1, height, width)
+        region_forward = feature_bg[:, :-1]
+        region_backward = feature_bg[:, 1:]
+    else:
+        region_forward = torch.ones_like(valid_forward)
+        region_backward = torch.ones_like(valid_backward)
+
+    candidate_forward = valid_forward * region_forward
+    candidate_backward = valid_backward * region_backward
+    teacher_magnitude_forward = teacher_forward.float().square().sum(2, keepdim=True).sqrt()
+    teacher_magnitude_backward = teacher_backward.float().square().sum(2, keepdim=True).sqrt()
+    large_forward = candidate_forward * (
+        teacher_magnitude_forward >= args.large_motion_threshold
+    ).to(candidate_forward.dtype)
+    large_backward = candidate_backward * (
+        teacher_magnitude_backward >= args.large_motion_threshold
+    ).to(candidate_backward.dtype)
+    return (
+        candidate_forward,
+        candidate_backward,
+        large_forward,
+        large_backward,
+        teacher_magnitude_forward,
+        teacher_magnitude_backward,
+    )
+
+
+def directional_motion_terms(
+    predicted: torch.Tensor,
+    teacher: torch.Tensor,
+    large_weight: torch.Tensor,
+    teacher_magnitude: torch.Tensor,
+    eps: float,
+    direction_norm_eps: float,
+) -> Dict[str, torch.Tensor]:
+    """Large-motion Charbonnier, direction, magnitude, and diagnostics."""
+    predicted = predicted.float()
+    teacher = teacher.float()
+    # Keep the derivative finite when the initial flow head predicts exactly
+    # zero everywhere; plain sqrt(x^2 + y^2) has an undefined derivative there.
+    predicted_magnitude = (predicted.square().sum(2, keepdim=True) + 1e-12).sqrt()
+    endpoint = (predicted - teacher).square().sum(2, keepdim=True).sqrt()
+    charbonnier = (endpoint.square() + float(eps) ** 2).sqrt()
+    denominator = large_weight.float().sum()
+    has_large = (denominator > 1e-6).to(predicted.dtype)
+
+    # A soft predicted norm gives a finite, deliberately bounded gradient at
+    # zero initial flow.  Without it, cosine direction has a 1/||f_pred||
+    # derivative and can dominate the first updates of a zero-initialized head.
+    predicted_direction_norm = (
+        predicted.square().sum(2, keepdim=True) + float(direction_norm_eps) ** 2
+    ).sqrt()
+    cosine = (predicted * teacher).sum(2, keepdim=True) / (
+        predicted_direction_norm * teacher_magnitude.clamp_min(1e-8)
+    )
+    # The relative error is stable because it is evaluated only where the
+    # teacher magnitude is at least --large_motion_threshold.
+    relative_magnitude_error = (
+        (predicted_magnitude - teacher_magnitude).abs()
+        / teacher_magnitude.clamp_min(1e-6)
+    )
+    large_epe = weighted_mean(endpoint, large_weight)
+    large_zero_epe = weighted_mean(teacher_magnitude, large_weight)
+    return {
+        "loss_large_motion": weighted_mean(charbonnier, large_weight) * has_large,
+        "loss_direction": (1.0 - weighted_mean(cosine, large_weight)) * has_large,
+        "loss_magnitude": weighted_mean(relative_magnitude_error, large_weight) * has_large,
+        "large_motion_epe_pred": large_epe * has_large,
+        "large_motion_epe_zero": large_zero_epe * has_large,
+        "large_motion_predicted_magnitude": (
+            weighted_mean(predicted_magnitude, large_weight) * has_large
+        ),
+        "large_motion_teacher_magnitude": large_zero_epe * has_large,
+        "cosine_direction": weighted_mean(cosine, large_weight) * has_large,
+    }
+
+
+def average_terms(forward: Dict[str, torch.Tensor], backward: Dict[str, torch.Tensor]):
+    return {key: 0.5 * (forward[key] + backward[key]) for key in forward}
+
+
+def compute_outputs(model, rgb, bg, teacher, args) -> Dict[str, torch.Tensor]:
+    """Compute the legacy all-flow loss plus motion-aware BG/all auxiliaries."""
     predicted_forward, predicted_backward = model(rgb, bg)
     report = compute_teacher_flow_loss(
         predicted_forward=predicted_forward,
@@ -205,11 +345,65 @@ def compute_outputs(model, rgb, bg, teacher, args):
     teacher_backward, valid_backward = prepare_teacher_flow(
         teacher["teacher_flow_backward"], size, teacher["teacher_valid_backward"]
     )
+    (
+        candidate_forward,
+        candidate_backward,
+        large_forward,
+        large_backward,
+        teacher_magnitude_forward,
+        teacher_magnitude_backward,
+    ) = motion_region_masks(
+        bg,
+        valid_forward,
+        valid_backward,
+        teacher_forward,
+        teacher_backward,
+        args,
+    )
+    terms = average_terms(
+        directional_motion_terms(
+            predicted_forward,
+            teacher_forward,
+            large_forward,
+            teacher_magnitude_forward,
+            args.flow_charbonnier_eps,
+            args.direction_norm_eps,
+        ),
+        directional_motion_terms(
+            predicted_backward,
+            teacher_backward,
+            large_backward,
+            teacher_magnitude_backward,
+            args.flow_charbonnier_eps,
+            args.direction_norm_eps,
+        ),
+    )
     zero_epe = 0.5 * (
         endpoint_error(torch.zeros_like(predicted_forward), teacher_forward, valid_forward)
         + endpoint_error(torch.zeros_like(predicted_backward), teacher_backward, valid_backward)
     )
-    return report, zero_epe
+    total_loss = (
+        report.loss
+        + args.large_motion_loss_weight * terms["loss_large_motion"]
+        + args.direction_loss_weight * terms["loss_direction"]
+        + args.magnitude_loss_weight * terms["loss_magnitude"]
+    )
+    large_candidate_fraction = 0.5 * (
+        large_forward.float().sum() / candidate_forward.float().sum().clamp_min(1e-6)
+        + large_backward.float().sum() / candidate_backward.float().sum().clamp_min(1e-6)
+    )
+    large_valid_ratio = 0.5 * (large_forward.float().mean() + large_backward.float().mean())
+    return {
+        "loss_total": total_loss,
+        "loss_flow": report.loss,
+        "epe_pred": report.epe,
+        "epe_zero": zero_epe,
+        "predicted_magnitude": report.predicted_magnitude,
+        "valid_ratio": 0.5 * (report.valid_forward_ratio + report.valid_backward_ratio),
+        "large_motion_valid_fraction": large_candidate_fraction,
+        "large_motion_valid_ratio": large_valid_ratio,
+        **terms,
+    }
 
 
 def reduce_sums(values: torch.Tensor) -> torch.Tensor:
@@ -221,34 +415,80 @@ def reduce_sums(values: torch.Tensor) -> torch.Tensor:
 @torch.no_grad()
 def validate(model, loader, args, accelerator) -> Dict[str, float]:
     model.eval()
-    totals = torch.zeros(6, device=accelerator.device, dtype=torch.float64)
+    metric_keys = (
+        "loss_total",
+        "loss_flow",
+        "epe_pred",
+        "epe_zero",
+        "predicted_magnitude",
+        "valid_ratio",
+        "loss_large_motion",
+        "loss_direction",
+        "loss_magnitude",
+        "large_motion_epe_pred",
+        "large_motion_epe_zero",
+        "large_motion_predicted_magnitude",
+        "large_motion_teacher_magnitude",
+        "cosine_direction",
+        "large_motion_valid_fraction",
+        "large_motion_valid_ratio",
+    )
+    totals = torch.zeros(len(metric_keys) + 1, device=accelerator.device, dtype=torch.float64)
     for batch in loader:
         clips, rgb, bg, teacher = batch_tensors(batch, args, accelerator.device)
         with accelerator.autocast():
-            report, zero_epe = compute_outputs(model, rgb, bg, teacher, args)
-        values = (
-            report.loss,
-            report.epe,
-            zero_epe,
-            report.predicted_magnitude,
-            report.valid_forward_ratio,
-        )
-        totals[:5] += torch.stack([value.detach().double() for value in values]) * clips
-        totals[5] += clips
+            outputs = compute_outputs(model, rgb, bg, teacher, args)
+        values = torch.stack([outputs[key].detach().double() for key in metric_keys])
+        totals[:-1] += values * clips
+        totals[-1] += clips
     totals = reduce_sums(totals)
-    count = totals[5].clamp_min(1.0)
-    metrics = {
-        "flow_loss": float(totals[0] / count),
-        "epe_pred": float(totals[1] / count),
-        "epe_zero": float(totals[2] / count),
-        "predicted_magnitude": float(totals[3] / count),
-        "valid_ratio": float(totals[4] / count),
-    }
+    count = totals[-1].clamp_min(1.0)
+    metrics = {key: float(totals[index] / count) for index, key in enumerate(metric_keys)}
     metrics["epe_gain_over_zero"] = 1.0 - metrics["epe_pred"] / max(
         metrics["epe_zero"], 1e-8
     )
+    metrics["large_motion_epe_gain_over_zero"] = 1.0 - (
+        metrics["large_motion_epe_pred"]
+        / max(metrics["large_motion_epe_zero"], 1e-8)
+    )
+    metrics["magnitude_ratio"] = metrics["large_motion_predicted_magnitude"] / max(
+        metrics["large_motion_teacher_magnitude"], 1e-8
+    )
     model.train()
     return metrics
+
+
+def resolved_best_metric(args: argparse.Namespace) -> str:
+    if args.best_metric != "auto":
+        return args.best_metric
+    if any(
+        weight > 0.0
+        for weight in (
+            args.large_motion_loss_weight,
+            args.direction_loss_weight,
+            args.magnitude_loss_weight,
+        )
+    ):
+        return "composite"
+    return "epe"
+
+
+def checkpoint_score(metrics: Dict[str, float], args: argparse.Namespace) -> float:
+    metric = resolved_best_metric(args)
+    if metric == "epe":
+        return metrics["epe_pred"]
+    if metric == "large_motion_epe":
+        return metrics["large_motion_epe_pred"]
+    return metrics["large_motion_epe_pred"] + args.best_all_epe_weight * metrics["epe_pred"]
+
+
+def objective_description(args: argparse.Namespace) -> str:
+    return (
+        "all-region Charbonnier + "
+        f"{args.large_motion_loss_weight:g}*large-motion Charbonnier + "
+        f"{args.direction_loss_weight:g}*large-motion direction + "
+        f"{args.magnitude_loss_weight:g}*large-motion relative-magnitude"
+    )
 
 
 def json_dump(path: Path, payload) -> None:
@@ -288,7 +528,7 @@ def save_checkpoint(
             checkpoint / "stc_flow_model", safe_serialization=True
         )
         metadata = {
-            "experiment": "v4pp_flow_head_only_stage1",
+            "experiment": "v4pp_flow_head_only_stage1b_motion_aware",
             "global_step": step,
             "trainable_components": ["flow_head"],
             "frozen_components": [
@@ -297,8 +537,15 @@ def save_checkpoint(
                 "alignment_fusion",
                 "zero_conv",
             ],
-            "flow_region": "all",
-            "loss": "bidirectional clean-teacher Charbonnier only",
+            "base_flow_region": "all",
+            "motion_loss_region": args.motion_loss_region,
+            "loss": objective_description(args),
+            "large_motion_threshold_feature_px": args.large_motion_threshold,
+            "large_motion_loss_weight": args.large_motion_loss_weight,
+            "direction_loss_weight": args.direction_loss_weight,
+            "magnitude_loss_weight": args.magnitude_loss_weight,
+            "checkpoint_selection_metric": resolved_best_metric(args),
+            "checkpoint_selection_score": checkpoint_score(metrics, args),
             "validation": metrics,
             "init_checkpoint": str(args.init_checkpoint.resolve()),
         }
@@ -347,14 +594,36 @@ def main() -> None:
     ):
         if value <= 0:
             raise ValueError("Clip, batch and step settings must be positive")
+    if args.large_motion_threshold < 0.0:
+        raise ValueError("--large_motion_threshold must be non-negative")
+    if args.direction_norm_eps <= 0.0:
+        raise ValueError("--direction_norm_eps must be positive")
+    if args.best_all_epe_weight < 0.0:
+        raise ValueError("--best_all_epe_weight must be non-negative")
+    for name in (
+        "large_motion_loss_weight",
+        "direction_loss_weight",
+        "magnitude_loss_weight",
+    ):
+        if getattr(args, name) < 0.0:
+            raise ValueError(f"--{name} must be non-negative")
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
     )
     set_seed(args.seed)
+    tensorboard_writer = None
     if accelerator.is_main_process:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+        if args.tensorboard_dir is None:
+            args.tensorboard_dir = args.output_dir / "tensorboard"
+        else:
+            args.tensorboard_dir = args.tensorboard_dir.expanduser().resolve()
+        tensorboard_writer = SummaryWriter(log_dir=str(args.tensorboard_dir))
         json_dump(args.output_dir / "run_config.json", vars(args))
+        tensorboard_writer.add_text(
+            "run/config", json.dumps(vars(args), sort_keys=True, default=str), 0
+        )
 
     resume = resolve_resume(args)
     init_component = resolve_component(
@@ -422,12 +691,18 @@ def main() -> None:
     if accelerator.is_main_process:
         json_dump(args.output_dir / "initial_validation.json", initial)
         print("INITIAL " + json.dumps(initial, sort_keys=True), flush=True)
+        for key, value in initial.items():
+            tensorboard_writer.add_scalar(f"valid/{key}", value, global_step)
+        tensorboard_writer.add_scalar(
+            "valid/checkpoint_selection_score", checkpoint_score(initial, args), global_step
+        )
+        tensorboard_writer.flush()
         print(
             f"trainable={sum(p.numel() for p in trainable):,} names={trainable_names[:3]}...",
             flush=True,
         )
 
-    best_epe = initial["epe_pred"]
+    best_score = checkpoint_score(initial, args)
     model.train()
     optimizer.zero_grad(set_to_none=True)
     epoch = 0
@@ -436,8 +711,8 @@ def main() -> None:
             with accelerator.accumulate(model):
                 _, rgb, bg, teacher = batch_tensors(batch, args, accelerator.device)
                 with accelerator.autocast():
-                    report, zero_epe = compute_outputs(model, rgb, bg, teacher, args)
-                    loss = report.loss
+                    outputs = compute_outputs(model, rgb, bg, teacher, args)
+                    loss = outputs["loss_total"]
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(trainable, args.max_grad_norm)
@@ -454,15 +729,22 @@ def main() -> None:
                     json.dumps(
                         {
                             "step": global_step,
-                            "loss_flow": float(loss.detach()),
-                            "epe_pred": float(report.epe.detach()),
-                            "epe_zero": float(zero_epe.detach()),
-                            "predicted_magnitude": float(report.predicted_magnitude.detach()),
                             "lr": float(scheduler.get_last_lr()[0]),
+                            **{
+                                key: float(value.detach())
+                                for key, value in outputs.items()
+                            },
                         },
                         sort_keys=True,
                     ),
                     flush=True,
+                )
+                for key, value in outputs.items():
+                    tensorboard_writer.add_scalar(
+                        f"train/{key}", float(value.detach()), global_step
+                    )
+                tensorboard_writer.add_scalar(
+                    "train/lr", float(scheduler.get_last_lr()[0]), global_step
                 )
             validate_now = (
                 global_step % args.validation_steps == 0
@@ -476,18 +758,26 @@ def main() -> None:
             is_best = False
             if validate_now:
                 metrics = validate(model, valid_loader, args, accelerator)
-                is_best = metrics["epe_pred"] <= best_epe
-                best_epe = min(best_epe, metrics["epe_pred"])
+                score = checkpoint_score(metrics, args)
+                is_best = score <= best_score
+                best_score = min(best_score, score)
                 if accelerator.is_main_process:
                     print(
                         f"VALID step={global_step} " + json.dumps(metrics, sort_keys=True),
                         flush=True,
                     )
+                    for key, value in metrics.items():
+                        tensorboard_writer.add_scalar(f"valid/{key}", value, global_step)
+                    tensorboard_writer.add_scalar(
+                        "valid/checkpoint_selection_score", score, global_step
+                    )
+                    tensorboard_writer.flush()
             if save_now or is_best:
                 if metrics is None:
                     metrics = validate(model, valid_loader, args, accelerator)
-                    is_best = metrics["epe_pred"] <= best_epe
-                    best_epe = min(best_epe, metrics["epe_pred"])
+                    score = checkpoint_score(metrics, args)
+                    is_best = score <= best_score
+                    best_score = min(best_score, score)
                 save_checkpoint(
                     accelerator,
                     model,
@@ -504,7 +794,11 @@ def main() -> None:
         epoch += 1
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        print(f"Finished at step={global_step}, best_valid_epe={best_epe:.6f}")
+        tensorboard_writer.close()
+        print(
+            f"Finished at step={global_step}, best_{resolved_best_metric(args)}="
+            f"{best_score:.6f}"
+        )
 
 
 if __name__ == "__main__":

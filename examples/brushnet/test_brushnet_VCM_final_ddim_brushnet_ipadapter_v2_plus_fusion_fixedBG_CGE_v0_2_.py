@@ -18,6 +18,7 @@ from diffusers.pipelines.brushnet.pipeline_brushnet_sharedNoise_sameBG_v0_0 impo
 # from diffusers.pipelines.brushnet.pipeline_brushnet_sharedNoise_v1 import StableDiffusionBrushNetPipeline
 from diffusers.models.brushnet import BrushNetModel
 from diffusers.schedulers.scheduling_ddim_CGE import CustomDDIMScheduler, cond_fn
+from vcmrs_codec_adapter import VCMRSOneFrameCodec
 
 import torch
 import cv2
@@ -112,6 +113,16 @@ ip_ckpt = "/media/ssd1/ndquan/model_naeun/paper/BrushNet/examples/checkpoint_nae
 pipe.scheduler = CustomDDIMScheduler.from_config(pipe.scheduler.config)
 pipe.scheduler.per_frame_cge = False
 pipe.scheduler.decode_chunk_size = int(os.environ.get("CGE_DECODE_CHUNK_SIZE", "1"))
+pipe.scheduler.vae_scaling_factor = float(pipe.vae.config.scaling_factor)
+pipe.scheduler.cge_codec = VCMRSOneFrameCodec.from_env()
+descriptor_template = os.environ.get("CGE_VCMRS_DESCRIPTOR_TEMPLATE")
+print(
+    "[CGE codec] VCM-RS profile={}, quality={}, root={}".format(
+        pipe.scheduler.cge_codec.profile,
+        pipe.scheduler.cge_codec.quality,
+        pipe.scheduler.cge_codec.vcmrs_root,
+    )
+)
 
 pipe.enable_model_cpu_offload()
 
@@ -188,6 +199,23 @@ print(f"[Resume] 총 {len(indexed_all)}개 중 이미 {len(indexed_all) - len(in
 
 # ========================================================================
 for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(indexed_pending)):
+    if pipe.scheduler.cge_codec.profile == "train_match":
+        if descriptor_template:
+            image_basename = os.path.basename(image_path)
+            image_stem = os.path.splitext(image_basename)[0]
+            descriptor_path = descriptor_template.format(
+                stem=image_stem,
+                basename=image_basename,
+                index=orig_idx,
+            )
+            pipe.scheduler.cge_codec.set_roi_descriptor(descriptor_path)
+        elif pipe.scheduler.cge_codec.roi_descriptor is None:
+            raise RuntimeError(
+                "train_match needs CGE_VCMRS_DESCRIPTOR for one frame or "
+                "CGE_VCMRS_DESCRIPTOR_TEMPLATE for a sequence. The descriptor must "
+                "use frame key 0 and match the 512x512 inference coordinates."
+            )
+
     init_image_np = cv2.imread(image_path)[:, :, ::-1]
     mask_np = 1. * (cv2.imread(mask_path).sum(-1) > 255)[:, :, np.newaxis]
 
@@ -216,6 +244,7 @@ for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(
     pipe.scheduler.mask = mask_transform(mask_image.convert("L")).unsqueeze(0).to(device=device)
     pipe.scheduler.decoder = pipe.vae.decode
     pipe.scheduler.cond_fn = cond_fn
+    pipe.scheduler.cge_codec_eval_count = 0
 
     result = ip_model.generate_fgbg(
     fg_pil_image=fg_pil,
@@ -223,6 +252,7 @@ for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(
     prompt=caption,
     image=init_image,
     mask_image=mask_image,
+    num_samples=1,
     num_inference_steps=50,
     generator=generator,
     use_shared_bg_noise=True,
@@ -259,4 +289,3 @@ for orig_idx, image_path, mask_path, caption in tqdm(indexed_pending, total=len(
     # 저장
     basename = os.path.basename(image_path)
     image.save(os.path.join(output_dir, basename))
-
