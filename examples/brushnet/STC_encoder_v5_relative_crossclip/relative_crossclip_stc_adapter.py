@@ -618,18 +618,22 @@ class RelativeCrossClipBGSTCAdapter(BGFocusedFlowAlignedRGBSTCAdapter):
             1,
             *delta.shape[-2:],
         )
-        bias_values = torch.stack(
-            [
-                block.attention.relative_position_bias.abs().mean()
-                for block in self.stc_adapter.temporal_blocks
-            ]
-        ).mean()
-        gate_values = torch.stack(
-            [
-                torch.tanh(block.cross_clip_gate).abs()
-                for block in self.stc_adapter.temporal_blocks
-            ]
-        ).mean()
+        # These values are diagnostics only. Keeping them out of the autograd
+        # output structure prevents DDP unused-parameter discovery from
+        # treating logging-only branches as loss-producing graph outputs.
+        with torch.no_grad():
+            bias_values = torch.stack(
+                [
+                    block.attention.relative_position_bias.abs().mean()
+                    for block in self.stc_adapter.temporal_blocks
+                ]
+            ).mean()
+            gate_values = torch.stack(
+                [
+                    torch.tanh(block.cross_clip_gate).abs()
+                    for block in self.stc_adapter.temporal_blocks
+                ]
+            ).mean()
         result = RelativeCrossClipRGBSTCOutput(
             delta_bg=delta * latent_bg_mask,
             features=features,
