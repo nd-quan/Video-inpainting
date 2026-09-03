@@ -27,18 +27,39 @@ from ..utils.torch_utils import randn_tensor
 from .scheduling_utils import KarrasDiffusionSchedulers, SchedulerMixin
 import os
 
-def _codec_roundtrip01(codec: Any, image: torch.Tensor, call_key: str) -> torch.Tensor:
+
+def _codec_uses_region_composite(codec: Any) -> bool:
+    """Return whether the codec exposes the train-style ROI/BG operator."""
+
+    return callable(getattr(codec, "roundtrip_regions01", None))
+
+
+def _codec_roundtrip01(
+    codec: Any,
+    image: torch.Tensor,
+    roi_mask: torch.Tensor,
+    call_key: str,
+) -> torch.Tensor:
     """Call the injected codec and enforce the CGE tensor contract."""
 
     if codec is None:
         raise RuntimeError(
             "CGE codec is not configured. Set scheduler.cge_codec to an object "
-            "providing roundtrip01(image_chw, call_key=...)."
+            "providing roundtrip01(...) or roundtrip_regions01(...)."
         )
-    roundtrip = getattr(codec, "roundtrip01", None)
-    if roundtrip is None:
-        raise TypeError("scheduler.cge_codec must provide a roundtrip01 method")
-    output = roundtrip(image, call_key=call_key)
+    if _codec_uses_region_composite(codec):
+        output = codec.roundtrip_regions01(
+            image,
+            roi_mask=roi_mask,
+            call_key=call_key,
+        )
+    else:
+        roundtrip = getattr(codec, "roundtrip01", None)
+        if roundtrip is None:
+            raise TypeError(
+                "scheduler.cge_codec must provide roundtrip01 or roundtrip_regions01"
+            )
+        output = roundtrip(image, call_key=call_key)
     if not isinstance(output, torch.Tensor):
         raise TypeError(f"CGE codec returned {type(output)!r}, expected torch.Tensor")
     if output.shape != image.shape:
@@ -48,8 +69,13 @@ def _codec_roundtrip01(codec: Any, image: torch.Tensor, call_key: str) -> torch.
     return output.to(device=image.device, dtype=image.dtype)
 
 
-def grad_codec(x_in, x_lr, maskBG, curStep, codec, call_key):
-    """Finite-difference CGE image gradient using an injected codec operator."""
+def grad_codec(x_in, x_lr, roi_mask, curStep, codec, call_key):
+    """Finite-difference CGE gradient for a codec degradation operator.
+
+    A dual-region codec already returns ``M*C20(x) + (1-M)*C52(x)`` and is
+    therefore compared to the observation over the full image.  A legacy
+    single codec retains the old background-only residual for compatibility.
+    """
 
     h = 16 / 255
     perturb = torch.ones_like(x_in)
@@ -58,23 +84,37 @@ def grad_codec(x_in, x_lr, maskBG, curStep, codec, call_key):
     x_in_h_bw = torch.clamp(x_in - h * perturb, -1, 1)
 
     x_in_degraded = _codec_roundtrip01(
-        codec, ((x_in + 1) / 2).clamp(0, 1), f"{call_key}_base"
+        codec,
+        ((x_in + 1) / 2).clamp(0, 1),
+        roi_mask,
+        f"{call_key}_base",
     )
     x_in_lr_h_fw = _codec_roundtrip01(
-        codec, ((x_in_h_fw + 1) / 2).clamp(0, 1), f"{call_key}_plus"
+        codec,
+        ((x_in_h_fw + 1) / 2).clamp(0, 1),
+        roi_mask,
+        f"{call_key}_plus",
     )
     x_in_lr_h_bw = _codec_roundtrip01(
-        codec, ((x_in_h_bw + 1) / 2).clamp(0, 1), f"{call_key}_minus"
+        codec,
+        ((x_in_h_bw + 1) / 2).clamp(0, 1),
+        roi_mask,
+        f"{call_key}_minus",
     )
-    
-    grad_Dx = 2 * maskBG * (x_in_degraded - ((x_lr + 1) / 2))
+
+    residual_mask = (
+        torch.ones_like(roi_mask)
+        if _codec_uses_region_composite(codec)
+        else 1 - roi_mask
+    )
+    grad_Dx = 2 * residual_mask * (x_in_degraded - ((x_lr + 1) / 2))
     grad_x = (x_in_lr_h_fw - x_in_lr_h_bw) * perturb / (2 * h)
-    grad_BG = grad_Dx * grad_x
+    grad_image = grad_Dx * grad_x
 
-    return grad_BG, (x_in_degraded * 2 - 1)  # range [-1, 1]
+    return grad_image, (x_in_degraded * 2 - 1)  # range [-1, 1]
 
 
-def grad_codec_batch(x_in, x_lr, maskBG, curStep, codec, call_prefix):
+def grad_codec_batch(x_in, x_lr, roi_mask, curStep, codec, call_prefix):
     from multiprocessing.pool import ThreadPool
 
     N = x_in.shape[0]
@@ -83,11 +123,13 @@ def grad_codec_batch(x_in, x_lr, maskBG, curStep, codec, call_prefix):
             x_lr = x_lr.repeat(N, 1, 1, 1)
         else:
             raise ValueError(f"x_lr batch size {x_lr.shape[0]} does not match x_in batch size {N}.")
-    if maskBG.shape[0] != N:
-        if maskBG.shape[0] == 1:
-            maskBG = maskBG.repeat(N, 1, 1, 1)
+    if roi_mask.shape[0] != N:
+        if roi_mask.shape[0] == 1:
+            roi_mask = roi_mask.repeat(N, 1, 1, 1)
         else:
-            raise ValueError(f"maskBG batch size {maskBG.shape[0]} does not match x_in batch size {N}.")
+            raise ValueError(
+                f"roi_mask batch size {roi_mask.shape[0]} does not match x_in batch size {N}."
+            )
 
     configured_workers = int(
         os.environ.get("CGE_CODEC_WORKERS", str(getattr(codec, "max_parallel", 1)))
@@ -101,7 +143,7 @@ def grad_codec_batch(x_in, x_lr, maskBG, curStep, codec, call_prefix):
             grad_BG_batch[i], x_in_degraded_batch[i] = grad_codec(
                 x_in[i],
                 x_lr[i],
-                maskBG[i],
+                roi_mask[i],
                 curStep,
                 codec,
                 f"{call_prefix}_b{i:02d}",
@@ -114,7 +156,7 @@ def grad_codec_batch(x_in, x_lr, maskBG, curStep, codec, call_prefix):
                     args=(
                         x_in[i],
                         x_lr[i],
-                        maskBG[i],
+                        roi_mask[i],
                         curStep,
                         codec,
                         f"{call_prefix}_b{i:02d}",
@@ -169,6 +211,7 @@ def cond_fn(x0, t, x_lr, mask, decoder, args=None):
         per_frame_cge = _as_bool(getattr(args, "per_frame_cge", _env_flag("CGE_PER_FRAME", "0")))
         scaling_factor = float(getattr(args, "vae_scaling_factor", 1.0))
         codec = getattr(args, "cge_codec", None)
+        uses_region_composite = _codec_uses_region_composite(codec)
         timestep_value = int(t.item()) if isinstance(t, torch.Tensor) else int(t)
         eval_index = int(getattr(args, "cge_codec_eval_count", 0))
         if args is not None:
@@ -186,34 +229,33 @@ def cond_fn(x0, t, x_lr, mask, decoder, args=None):
                     decoder, x0_i, chunk_size=1, scaling_factor=scaling_factor
                 )
 
-                roi_loss_i = torch.sum((((x_lr_i + 1) / 2 - (I_hat_i + 1) / 2) * mask_i) ** 2)
-                grad_roi_i = torch.autograd.grad(roi_loss_i, x0_i, retain_graph=True)[0]
+                grad_roi_i = None
+                if not uses_region_composite:
+                    roi_loss_i = torch.sum(
+                        ((((x_lr_i + 1) / 2 - (I_hat_i + 1) / 2) * mask_i) ** 2)
+                    )
+                    grad_roi_i = torch.autograd.grad(
+                        roi_loss_i, x0_i, retain_graph=True
+                    )[0]
 
-                mask_bg_i = 1 - mask_i
-                grad_bg_image_i, _ = grad_codec_batch(
+                grad_codec_image_i, _ = grad_codec_batch(
                     I_hat_i.detach(),
                     x_lr_i.detach(),
-                    mask_bg_i.detach(),
+                    mask_i.detach(),
                     timestep_value,
                     codec,
                     f"{call_prefix}_pf{batch_idx:02d}",
                 )
-                grad_bg_i = torch.autograd.grad(
+                grad_codec_i = torch.autograd.grad(
                     outputs=I_hat_i,
                     inputs=x0_i,
-                    grad_outputs=grad_bg_image_i,
+                    grad_outputs=grad_codec_image_i,
                     retain_graph=False,
                 )[0]
-                grads.append(grad_roi_i + grad_bg_i)
-
-                del (
-                    x0_i,
-                    x_lr_i,
-                    mask_i,
-                    I_hat_i,
-                    grad_roi_i,
-                    grad_bg_image_i,
-                    grad_bg_i,
+                grads.append(
+                    grad_codec_i
+                    if grad_roi_i is None
+                    else grad_roi_i + grad_codec_i
                 )
 
             raw_grad = torch.cat(grads, dim=0).to(dtype=x0.dtype)
@@ -228,27 +270,34 @@ def cond_fn(x0, t, x_lr, mask, decoder, args=None):
             decoder, x0, decode_chunk_size, scaling_factor=scaling_factor
         )
         
-        roi_loss = torch.sum((((x_lr+ 1) / 2 - (I_hat + 1) / 2) * mask) ** 2) # 이거 I_hat이랑 x_lr 위치 주의
-        grad_roi = torch.autograd.grad(roi_loss, x0, retain_graph=True)[0]
-        
-        mask_bg = 1 - mask
-        grad_bg_image, _ = grad_codec_batch(
+        grad_roi = None
+        if not uses_region_composite:
+            roi_loss = torch.sum(
+                ((((x_lr + 1) / 2 - (I_hat + 1) / 2) * mask) ** 2)
+            )
+            grad_roi = torch.autograd.grad(roi_loss, x0, retain_graph=True)[0]
+
+        grad_codec_image, _ = grad_codec_batch(
             I_hat.detach(),
             x_lr.detach(),
-            mask_bg.detach(),
+            mask.detach(),
             timestep_value,
             codec,
             call_prefix,
         )
 
-        grad_bg = torch.autograd.grad(
+        grad_codec_latent = torch.autograd.grad(
             outputs=I_hat,
             inputs=x0,
-            grad_outputs=grad_bg_image,
+            grad_outputs=grad_codec_image,
             retain_graph=False,
         )[0]
 
-        raw_grad = (grad_roi + grad_bg).to(dtype=x0.dtype)
+        raw_grad = (
+            grad_codec_latent
+            if grad_roi is None
+            else grad_roi + grad_codec_latent
+        ).to(dtype=x0.dtype)
         if args is not None:
             args.last_cge_raw_grad = raw_grad.detach()
         return -guidance_scale * raw_grad
@@ -539,6 +588,8 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
             )
 
         self.num_inference_steps = num_inference_steps
+        self.cge_denoise_step_count = 0
+        self.cge_codec_eval_count = 0
 
         # "linspace", "leading", "trailing" corresponds to annotation of Table 2. of https://arxiv.org/abs/2305.08891
         if self.config.timestep_spacing == "linspace":
@@ -679,6 +730,44 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
         if self.cond_fn is not None:
             use_pgd_bg_residual = getattr(self, "use_pgd_bg_residual", False)
             direct_cge_guidance = _as_bool(getattr(self, "direct_cge_guidance", True))
+            cge_denoise_step_count = int(getattr(self, "cge_denoise_step_count", 0))
+            cge_start_step = int(
+                getattr(self, "cge_start_step", os.environ.get("CGE_START_STEP", "0"))
+            )
+            cge_end_step = getattr(self, "cge_end_step", os.environ.get("CGE_END_STEP"))
+            if cge_end_step is not None and str(cge_end_step).strip().lower() not in {
+                "",
+                "none",
+            }:
+                cge_end_step = int(cge_end_step)
+            else:
+                cge_end_step = None
+            cge_every_n_steps = int(
+                getattr(
+                    self,
+                    "cge_every_n_steps",
+                    os.environ.get("CGE_EVERY_N_STEPS", "1"),
+                )
+            )
+            if cge_every_n_steps < 1:
+                raise ValueError("CGE_EVERY_N_STEPS must be >= 1")
+            cge_max_evals = int(
+                getattr(self, "cge_max_evals", os.environ.get("CGE_MAX_EVALS", "-1"))
+            )
+            cge_eval_count = int(getattr(self, "cge_codec_eval_count", 0))
+            in_cge_window = cge_denoise_step_count >= cge_start_step and (
+                cge_end_step is None or cge_denoise_step_count < cge_end_step
+            )
+            on_cge_cadence = (
+                cge_denoise_step_count - cge_start_step
+            ) % cge_every_n_steps == 0
+            below_cge_limit = cge_max_evals < 0 or cge_eval_count < cge_max_evals
+            should_run_direct_cge = (
+                direct_cge_guidance
+                and in_cge_window
+                and on_cge_cadence
+                and below_cge_limit
+            )
             should_run_pgd = False
 
             if use_pgd_bg_residual:
@@ -696,7 +785,7 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
                 pgd_step_count = 0
                 pgd_steps = 0
 
-            should_run_cge = direct_cge_guidance or should_run_pgd
+            should_run_cge = should_run_direct_cge or should_run_pgd
 
             if should_run_cge:
                 grad = self.cond_fn(
@@ -707,7 +796,7 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
                     decoder=self.decoder,
                     args=self,
                 )
-                if direct_cge_guidance:
+                if should_run_direct_cge:
                     prev_sample = prev_sample + grad  # latent 업데이트
 
             if use_pgd_bg_residual:
@@ -741,6 +830,7 @@ class CustomDDIMScheduler(SchedulerMixin, ConfigMixin):
                     self.pgd_residual_norm_mean = float(residual_norm.mean().detach().cpu())
                     self.pgd_residual_norm_max = float(residual_norm.max().detach().cpu())
                 self.pgd_denoise_step_count = pgd_denoise_step_count + 1
+            self.cge_denoise_step_count = cge_denoise_step_count + 1
             
         if eta > 0:
             if variance_noise is not None and generator is not None:

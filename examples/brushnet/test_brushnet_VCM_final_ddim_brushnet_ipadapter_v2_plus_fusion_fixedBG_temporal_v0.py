@@ -81,7 +81,7 @@ base_model_path = os.environ.get(
 checkpoint_dir = os.environ.get(
     "CHECKPOINT_DIR",
     "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
-    "checkpoint_sharedNoise_sameBG_0.9/checkpoint-2500",
+    "train_sharedNoise_sameBG_0.95_T8/checkpoint-2250",
 )
 
 brushnet_path = f"{checkpoint_dir}/brushnet"
@@ -102,7 +102,7 @@ variance_preserving_shared_noise = (
 )
 
 temporal_guidance_scale = float(os.environ.get("TEMPORAL_GUIDANCE_SCALE", "0.0001"))
-temporal_start_step = int(os.environ.get("TEMPORAL_START_STEP", "15"))  
+temporal_start_step = int(os.environ.get("TEMPORAL_START_STEP", "25"))  
 temporal_end_step = int(os.environ.get("TEMPORAL_END_STEP", "35"))      
 temporal_every_n_steps = int(os.environ.get("TEMPORAL_EVERY_N_STEPS", "1"))
 temporal_decode_chunk_size = int(os.environ.get("TEMPORAL_DECODE_CHUNK_SIZE", "1"))
