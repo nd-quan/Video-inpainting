@@ -581,6 +581,7 @@ class VCMRSDualRegionCodec:
     _temporary_descriptor_root: Optional[tempfile.TemporaryDirectory] = field(
         init=False, default=None, repr=False
     )
+    cge_operator: str = field(init=False, default="dual_region_qp20_qp52")
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.mask_threshold < 1.0:
@@ -800,6 +801,48 @@ class VCMRSDualRegionCodec:
             raise RuntimeError("Binary ROI/BG mask unexpectedly selected no pixels")
         return merged
 
+    def roundtrip_background01(
+        self,
+        image: torch.Tensor,
+        *,
+        roi_mask: torch.Tensor,
+        call_key: str = "frame",
+    ) -> torch.Tensor:
+        """Run only the QP52 background branch of the regional degradation.
+
+        This is the deliberately *approximate* fast-CGE operator.  Its caller
+        applies the codec residual only on background pixels and supplies a
+        direct image-space fidelity loss for ROI.  We still pass the ROI mask
+        here because the ``train_match`` background encoder needs its
+        complementary key-0 descriptor.
+
+        Returning ``image`` when a frame has no background is safe: the caller
+        masks the codec residual to zero in that case, while the direct ROI
+        term remains active.
+        """
+
+        mask = _normalize_roi_mask(roi_mask, image, self.mask_threshold)
+        has_bg = bool(torch.logical_not(mask).any().item())
+        if not has_bg:
+            return image
+
+        bg_descriptor = self.bg_descriptor
+        if self.profile == "train_match" and bg_descriptor is None:
+            if not self.auto_descriptors:
+                raise ValueError(
+                    "train_match background-only CGE needs a BG descriptor. "
+                    "Set CGE_VCMRS_BG_DESCRIPTOR or enable "
+                    "CGE_VCMRS_AUTO_DESCRIPTORS=1."
+                )
+            _, auto_bg = self._descriptor_pair_for_mask(mask, call_key)
+            bg_descriptor = auto_bg
+
+        return self._bg_codec.roundtrip01(
+            image,
+            call_key=f"{call_key}_bg_qp{self.bg_quality}",
+            descriptor_override=bg_descriptor,
+        )
+
     def roundtrip01(
         self,
         image: torch.Tensor,
@@ -808,6 +851,71 @@ class VCMRSDualRegionCodec:
         call_key: str = "frame",
     ) -> torch.Tensor:
         return self.roundtrip_regions01(image, roi_mask=roi_mask, call_key=call_key)
+
+
+@dataclass
+class VCMRSBackgroundOnlyCodec:
+    """Fast-CGE façade over :class:`VCMRSDualRegionCodec`.
+
+    It intentionally does *not* expose ``roundtrip_regions01``.  The CGE
+    scheduler therefore retains its legacy residual layout: direct ROI
+    fidelity plus a codec residual on background only.  The underlying VCM-RS
+    invocation remains the QP52, train-match-compatible background branch.
+    """
+
+    regional_codec: VCMRSDualRegionCodec
+    cge_operator: str = field(init=False, default="direct_roi_plus_bg_qp52")
+
+    @classmethod
+    def from_env(cls) -> "VCMRSBackgroundOnlyCodec":
+        return cls(regional_codec=VCMRSDualRegionCodec.from_env())
+
+    @property
+    def profile(self) -> str:
+        return self.regional_codec.profile
+
+    @property
+    def roi_quality(self) -> int:
+        """Input ROI quality, retained only for run metadata (not encoded)."""
+
+        return self.regional_codec.roi_quality
+
+    @property
+    def bg_quality(self) -> int:
+        return self.regional_codec.bg_quality
+
+    @property
+    def roi_descriptor(self) -> Optional[Path]:
+        return self.regional_codec.roi_descriptor
+
+    @property
+    def bg_descriptor(self) -> Optional[Path]:
+        return self.regional_codec.bg_descriptor
+
+    @property
+    def max_parallel(self) -> int:
+        return self.regional_codec.max_parallel
+
+    def __getattr__(self, name):
+        """Expose read-only VCM-RS metadata used by existing CGE runners."""
+
+        return getattr(self.regional_codec, name)
+
+    def prepare_region_mask(self, roi_mask: torch.Tensor, image: torch.Tensor) -> None:
+        self.regional_codec.prepare_region_mask(roi_mask, image)
+
+    def roundtrip_background01(
+        self,
+        image: torch.Tensor,
+        *,
+        roi_mask: torch.Tensor,
+        call_key: str = "frame",
+    ) -> torch.Tensor:
+        return self.regional_codec.roundtrip_background01(
+            image,
+            roi_mask=roi_mask,
+            call_key=call_key,
+        )
 
 
 def _image_to_tensor(path: Path) -> torch.Tensor:

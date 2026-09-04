@@ -236,7 +236,7 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
     def set_temporal_guidance(
         self,
         *,
-        decoder: Callable,
+        decoder: Optional[Callable] = None,
         flow_backward: torch.FloatTensor,
         stable_bg: torch.FloatTensor,
         bg_masks: Optional[torch.FloatTensor] = None,
@@ -252,10 +252,21 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
         detach_previous: bool = False,
         enabled: bool = True,
         loss_type: str = "l2",
+        guidance_space: str = "rgb",
     ):
-        """Attach fixed clip-level temporal conditions to this scheduler."""
-        if not callable(decoder):
-            raise TypeError("`decoder` must be callable.")
+        """Attach fixed clip-level temporal conditions to this scheduler.
+
+        ``guidance_space='rgb'`` decodes predicted x0 through the VAE before
+        comparing adjacent warped frames.  ``'latent'`` compares the four
+        predicted-x0 VAE latents directly.  Both modes update the same
+        ``pred_original_sample`` and use the same RGB-space flow, which is
+        resized with displacement scaling by :func:`backward_warp`.
+        """
+        guidance_space = str(guidance_space).lower()
+        if guidance_space not in {"rgb", "latent"}:
+            raise ValueError("`guidance_space` must be 'rgb' or 'latent'.")
+        if guidance_space == "rgb" and not callable(decoder):
+            raise TypeError("`decoder` must be callable for RGB temporal guidance.")
         if flow_backward.ndim != 4 or flow_backward.shape[1] != 2:
             raise ValueError(
                 f"`flow_backward` must have shape [N-1, 2, H, W], but got {tuple(flow_backward.shape)}."
@@ -307,6 +318,7 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
         self.temporal_guidance_enabled = bool(enabled)
         self.temporal_step_count = 0
         self.temporal_loss_type = loss_type
+        self.temporal_guidance_space = guidance_space
 
     def _skip_temporal_guidance(
         self,
@@ -381,11 +393,14 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
         decoder = getattr(self, "temporal_decoder", None)
         flow_backward = getattr(self, "temporal_flow_backward", None)
         stable_bg = getattr(self, "temporal_stable_bg", None)
-        if decoder is None or flow_backward is None or stable_bg is None:
+        guidance_space = getattr(self, "temporal_guidance_space", "rgb")
+        if flow_backward is None or stable_bg is None:
             raise RuntimeError(
-                "Temporal guidance is enabled but its decoder/flow/stable-BG data is missing. "
+                "Temporal guidance is enabled but its flow/stable-BG data is missing. "
                 "Call `set_temporal_guidance(...)` before sampling."
             )
+        if guidance_space == "rgb" and decoder is None:
+            raise RuntimeError("RGB temporal guidance requires a VAE decoder.")
 
         frame_count = pred_original_sample.shape[0]
         expected_pairs = frame_count - 1
@@ -397,20 +412,26 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
 
         with torch.enable_grad():
             z0 = pred_original_sample.detach().clone().requires_grad_(True)
-            predicted_images = decode_with_chunks(
-                decoder=decoder,
-                latents=z0,
-                scaling_factor=float(getattr(self, "temporal_vae_scaling_factor", 0.18215)),
-                chunk_size=int(getattr(self, "temporal_decode_chunk_size", 1)),
-            )
-            if not bool(torch.isfinite(predicted_images).all()):
+            if guidance_space == "rgb":
+                temporal_values = decode_with_chunks(
+                    decoder=decoder,
+                    latents=z0,
+                    scaling_factor=float(getattr(self, "temporal_vae_scaling_factor", 0.18215)),
+                    chunk_size=int(getattr(self, "temporal_decode_chunk_size", 1)),
+                )
+            else:
+                # z0 is the VAE-scaled predicted-clean latent used by the
+                # diffusion model.  Do not divide by scaling_factor here:
+                # doing so only rescales the loss/gradient, not the geometry.
+                temporal_values = z0
+            if not bool(torch.isfinite(temporal_values).all()):
                 return self._skip_temporal_guidance(
-                    "non-finite VAE prediction",
+                    f"non-finite {guidance_space} temporal prediction",
                     pred_original_sample,
                 )
 
             temporal_loss = bg_temporal_loss(
-                predicted_images=predicted_images,
+                predicted_images=temporal_values,
                 flow_backward=flow_backward,
                 stable_bg=stable_bg,
                 charbonnier_eps=float(getattr(self, "temporal_charbonnier_eps", 1e-3)),

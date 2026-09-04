@@ -44,6 +44,11 @@ from diffusers.schedulers.scheduling_ddim_temporal import (
     backward_warp,
     build_stable_bg_mask,
 )
+from diffusers.schedulers.scheduling_ddim_cge_temporal import (
+    CGETemporalDDIMScheduler,
+)
+from diffusers.schedulers.scheduling_ddim_CGE import cond_fn as cge_cond_fn
+from vcmrs_codec_adapter import VCMRSBackgroundOnlyCodec, VCMRSDualRegionCodec
 
 import torch
 import cv2
@@ -53,6 +58,9 @@ from torchvision import transforms
 from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 from ip_adapter import FusionIPAdapter
+
+# The V7 student is imported lazily below.  The default temporal-v0 path must
+# remain usable without its checkpoint or ProPainter dependency.
 
 ##################### 디퓨전 값 고정하기 위해서
 import random
@@ -107,12 +115,32 @@ temporal_end_step = int(os.environ.get("TEMPORAL_END_STEP", "35"))
 temporal_every_n_steps = int(os.environ.get("TEMPORAL_EVERY_N_STEPS", "1"))
 temporal_decode_chunk_size = int(os.environ.get("TEMPORAL_DECODE_CHUNK_SIZE", "1"))
 temporal_loss_scale = float(os.environ.get("TEMPORAL_LOSS_SCALE", "1024"))
+temporal_guidance_space = os.environ.get("TEMPORAL_GUIDANCE_SPACE", "rgb").lower()
 temporal_detach_previous = (
     os.environ.get("TEMPORAL_DETACH_PREVIOUS", "1").lower()
     in {"1", "true", "yes", "on"}       ### tested: True (v0_4)
 )
 flow_batch_size = int(os.environ.get("TEMPORAL_FLOW_BATCH_SIZE", "2"))
+temporal_flow_backend = os.environ.get("TEMPORAL_FLOW_BACKEND", "torchvision").lower()
+v7_raft_student_path = os.environ.get("V7_RAFT_STUDENT_PATH", "").strip()
+temporal_bg_mask_mode = os.environ.get(
+    "TEMPORAL_BG_MASK_MODE", "full_stable"
+).lower()
+guidance_mode = os.environ.get("GUIDANCE_MODE", "temporal").lower()
+cge_guidance_scale = float(os.environ.get("CGE_GUIDANCE_SCALE", "0.0001"))
+cge_start_step = int(os.environ.get("CGE_START_STEP", "25"))
+_cge_end_raw = os.environ.get("CGE_END_STEP", "35").strip().lower()
+cge_end_step = None if _cge_end_raw in {"", "none"} else int(_cge_end_raw)
+cge_every_n_steps = int(os.environ.get("CGE_EVERY_N_STEPS", "1"))
+cge_max_evals = int(os.environ.get("CGE_MAX_EVALS", "-1"))
+cge_codec_mode = os.environ.get("CGE_CODEC_MODE", "bg_only").lower()
+cge_per_frame = os.environ.get("CGE_PER_FRAME", "0").lower() in {
+    "1", "true", "yes", "on"
+}
 force_regenerate = os.environ.get("FORCE_REGENERATE", "0").lower() in {"1", "true", "yes", "on"}
+
+temporal_mode_enabled = guidance_mode in {"temporal", "combined"}
+cge_mode_enabled = guidance_mode in {"cge", "combined"}
 
 brushnet_conditioning_scale = 1.0
 
@@ -126,6 +154,33 @@ if temporal_every_n_steps <= 0:
     raise ValueError("TEMPORAL_EVERY_N_STEPS must be positive.")
 if flow_batch_size <= 0:
     raise ValueError("TEMPORAL_FLOW_BATCH_SIZE must be positive.")
+if temporal_flow_backend not in {"torchvision", "v7_student"}:
+    raise ValueError("TEMPORAL_FLOW_BACKEND must be 'torchvision' or 'v7_student'.")
+if temporal_mode_enabled and temporal_flow_backend == "v7_student" and not v7_raft_student_path:
+    raise ValueError(
+        "TEMPORAL_FLOW_BACKEND=v7_student requires V7_RAFT_STUDENT_PATH."
+    )
+if temporal_bg_mask_mode not in {"full_stable", "pair_intersection"}:
+    raise ValueError(
+        "TEMPORAL_BG_MASK_MODE must be 'full_stable' or 'pair_intersection'."
+    )
+if temporal_guidance_space not in {"rgb", "latent"}:
+    raise ValueError("TEMPORAL_GUIDANCE_SPACE must be 'rgb' or 'latent'.")
+if guidance_mode not in {"temporal", "cge", "combined"}:
+    raise ValueError("GUIDANCE_MODE must be 'temporal', 'cge', or 'combined'.")
+if cge_guidance_scale < 0.0:
+    raise ValueError("CGE_GUIDANCE_SCALE must be non-negative.")
+if cge_start_step < 0 or (cge_end_step is not None and cge_end_step <= cge_start_step):
+    raise ValueError("Invalid [CGE_START_STEP, CGE_END_STEP) window.")
+if cge_every_n_steps < 1:
+    raise ValueError("CGE_EVERY_N_STEPS must be positive.")
+if cge_codec_mode not in {"bg_only", "dual_region"}:
+    raise ValueError("CGE_CODEC_MODE must be 'bg_only' or 'dual_region'.")
+if guidance_mode == "combined" and temporal_guidance_space != "latent":
+    raise ValueError(
+        "GUIDANCE_MODE=combined currently requires "
+        "TEMPORAL_GUIDANCE_SPACE=latent to avoid a second VAE decode."
+    )
 for model_dir_name, model_dir_path in (
     ("BASE_MODEL_PATH", base_model_path),
     ("CHECKPOINT_DIR", checkpoint_dir),
@@ -148,7 +203,11 @@ image_encoder = CLIPVisionModelWithProjection.from_pretrained(
 
 # ip_ckpt="/home/gpu_01/naeun/v8/checkpoint-300000/ipadapter/model.safetensors"
 ip_ckpt = f"{checkpoint_dir}/ipadapter/model.safetensors"
-pipe.scheduler = TemporalDDIMScheduler.from_config(pipe.scheduler.config)
+pipe.scheduler = (
+    CGETemporalDDIMScheduler.from_config(pipe.scheduler.config)
+    if cge_mode_enabled
+    else TemporalDDIMScheduler.from_config(pipe.scheduler.config)
+)
 if hasattr(pipe, "enable_vae_slicing"):
     pipe.enable_vae_slicing()
 for parameter in pipe.vae.parameters():
@@ -170,13 +229,63 @@ ip_model = FusionIPAdapter(
     device,
 )
 
-# RAFT stays on CPU between clips. It is moved to GPU only while computing
-# flow, then offloaded before BrushNet sampling.
-flow_weights = Raft_Large_Weights.DEFAULT
-flow_transform = flow_weights.transforms()
-flow_model = raft_large(weights=flow_weights, progress=True).eval()
-for parameter in flow_model.parameters():
-    parameter.requires_grad_(False)
+# The legacy RAFT-Large stays on CPU between clips.  The V7 student follows
+# the same offload policy so it does not reserve memory during diffusion.
+flow_model = None
+flow_transform = None
+v7_flow_provider = None
+if not temporal_mode_enabled:
+    print("[Temporal flow] disabled because GUIDANCE_MODE=cge")
+elif temporal_flow_backend == "torchvision":
+    flow_weights = Raft_Large_Weights.DEFAULT
+    flow_transform = flow_weights.transforms()
+    flow_model = raft_large(weights=flow_weights, progress=True).eval()
+    for parameter in flow_model.parameters():
+        parameter.requires_grad_(False)
+else:
+    from STC_encoder_v8_raft_deformable.raft_flow_provider import (
+        FrozenV7RAFTFlowProvider,
+        resolve_raft_student_component,
+    )
+
+    v7_raft_student_path = str(resolve_raft_student_component(v7_raft_student_path))
+    v7_flow_provider = FrozenV7RAFTFlowProvider(
+        v7_raft_student_path,
+        device=device,
+        pair_batch_size=flow_batch_size,
+        mixed_precision=True,
+    )
+    # ``FrozenV7RAFTFlowProvider`` loads on CUDA by design for V8.  Move its
+    # frozen student back to CPU until a temporal clip actually needs flow.
+    v7_flow_provider.student.to("cpu")
+    print(
+        "[Temporal flow] backend=v7_student, "
+        f"checkpoint={v7_raft_student_path}, pair_batch_size={flow_batch_size}"
+    )
+
+cge_codec = None
+if cge_mode_enabled:
+    cge_codec = (
+        VCMRSBackgroundOnlyCodec.from_env()
+        if cge_codec_mode == "bg_only"
+        else VCMRSDualRegionCodec.from_env()
+    )
+    pipe.scheduler.cge_codec = cge_codec
+    pipe.scheduler.guidance_scale_cge = cge_guidance_scale
+    pipe.scheduler.cge_start_step = cge_start_step
+    pipe.scheduler.cge_end_step = cge_end_step
+    pipe.scheduler.cge_every_n_steps = cge_every_n_steps
+    pipe.scheduler.cge_max_evals = cge_max_evals
+    pipe.scheduler.per_frame_cge = cge_per_frame
+    pipe.scheduler.decode_chunk_size = temporal_decode_chunk_size
+    pipe.scheduler.vae_scaling_factor = float(pipe.vae.config.scaling_factor)
+    pipe.scheduler.direct_cge_guidance = True
+    print(
+        "[CGE] enabled, "
+        f"codec={cge_codec_mode}, scale={cge_guidance_scale}, "
+        f"window=[{cge_start_step}, {cge_end_step}), every={cge_every_n_steps}, "
+        f"per_frame={cge_per_frame}"
+    )
 
 resize_transform = transforms.Compose([
     transforms.Resize((512, 512)),
@@ -224,11 +333,36 @@ def prepare_frame_inputs(image_path, mask_path):
 
 @torch.no_grad()
 def estimate_bidirectional_flow(frames):
-    """Estimate adjacent forward/backward flow for a full RGB clip."""
+    """Estimate adjacent flow from the configured degraded-RGB flow backend.
+
+    Both backends return RGB-pixel flow in the scheduler convention:
+    forward is defined on frame t and samples t+1; backward is defined on
+    frame t+1 and samples t.  ``frames`` contains the already degraded input
+    RGB clip in [0,1], never clean GT or generated frames.
+    """
     pair_count = frames.shape[0] - 1
     if pair_count <= 0:
         raise ValueError("At least two frames are required for temporal flow.")
 
+    if temporal_flow_backend == "v7_student":
+        if v7_flow_provider is None:
+            raise RuntimeError("V7 temporal flow provider was not initialized.")
+        # V7 was trained on degraded RGB normalized to [-1,1] and expects
+        # [B,T,3,H,W].  Keep it on GPU only for this pre-sampling flow pass.
+        v7_flow_provider.student.to(device)
+        try:
+            prediction = v7_flow_provider.predict_sequence(
+                frames.to(device=device, dtype=torch.float32).mul(2.0).sub(1.0).unsqueeze(0)
+            )
+            flow_forward = prediction.forward.squeeze(0)
+            flow_backward = prediction.backward.squeeze(0)
+        finally:
+            v7_flow_provider.student.to("cpu")
+        torch.cuda.empty_cache()
+        return flow_forward, flow_backward
+
+    if flow_model is None or flow_transform is None:
+        raise RuntimeError("Torchvision temporal flow model was not initialized.")
     flow_model.to(device)
     forward_flows = []
     backward_flows = []
@@ -275,19 +409,36 @@ def forward_backward_visibility(
 
 @torch.no_grad()
 def prepare_temporal_conditions(flow_frames, roi_masks):
-    """Create backward flow, visibility, BG masks, and stable-BG masks."""
+    """Create the fixed backward-flow condition for one denoising clip.
+
+    ``pair_intersection`` is deliberately the light temporal-mask variant:
+    both correspondence endpoints must be BG, and the source coordinate must
+    be in bounds.  Unlike ``full_stable``, it does not require forward flow or
+    a forward-backward visibility/cycle-consistency test.
+    """
     flow_forward, flow_backward = estimate_bidirectional_flow(flow_frames)
-    visibility = forward_backward_visibility(flow_forward, flow_backward)
 
     bg_masks = (1.0 - roi_masks).to(device=device, dtype=torch.float32)
-    stable_bg = build_stable_bg_mask(
-        bg_masks=bg_masks,
-        flow_backward=flow_backward,
-        visibility=visibility,
-        threshold=0.5,
-    )
+    if temporal_bg_mask_mode == "pair_intersection":
+        stable_bg = build_stable_bg_mask(
+            bg_masks=bg_masks,
+            flow_backward=flow_backward,
+            visibility=None,
+            threshold=0.5,
+        )
+        visibility = None
+    else:
+        visibility = forward_backward_visibility(flow_forward, flow_backward)
+        stable_bg = build_stable_bg_mask(
+            bg_masks=bg_masks,
+            flow_backward=flow_backward,
+            visibility=visibility,
+            threshold=0.5,
+        )
 
-    del flow_forward, visibility
+    del flow_forward
+    if visibility is not None:
+        del visibility
     return flow_backward, stable_bg, bg_masks
 
 
@@ -352,17 +503,39 @@ def run_sequence(sequence):
         "frame_count": len(sequence.frame_ids),
         "frame_range": [sequence.frame_ids[0], sequence.frame_ids[-1]],
         "temporal_clip_size": clip_size,
+        "temporal_flow_backend": temporal_flow_backend,
+        "v7_raft_student_path": (
+            v7_raft_student_path
+            if temporal_mode_enabled and temporal_flow_backend == "v7_student"
+            else None
+        ),
+        "temporal_bg_mask_mode": temporal_bg_mask_mode,
+        "temporal_guidance_space": temporal_guidance_space,
+        "guidance_mode": guidance_mode,
+        "cge": None
+        if not cge_mode_enabled
+        else {
+            "codec_mode": cge_codec_mode,
+            "guidance_scale": cge_guidance_scale,
+            "window": [cge_start_step, cge_end_step],
+            "every_n_steps": cge_every_n_steps,
+            "max_evals": cge_max_evals,
+            "per_frame": cge_per_frame,
+        },
     }
     (output_dir / "source_metadata.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
     print(
-        f"[Fixed shared BG + temporal guidance:{sequence.spec.label}] "
+        f"[Fixed shared BG guidance={guidance_mode}:{sequence.spec.label}] "
         f"clip_size={clip_size}, clips_to_run={len(clips_to_run)}, "
         f"shared_strength={shared_bg_noise_strength}, "
         f"variance_preserving={variance_preserving_shared_noise}, "
         f"temporal_window=[{temporal_start_step}, {temporal_end_step}), "
-        f"temporal_scale={temporal_guidance_scale}, every_n_steps={temporal_every_n_steps}"
+        f"temporal_scale={temporal_guidance_scale}, every_n_steps={temporal_every_n_steps}, "
+        f"flow_backend={temporal_flow_backend}, bg_mask={temporal_bg_mask_mode}, "
+        f"guidance_space={temporal_guidance_space}, "
+        f"cge_window=[{cge_start_step}, {cge_end_step})"
     )
 
     for clip_idx, clip in tqdm(clips_to_run, total=len(clips_to_run), desc=sequence.spec.label):
@@ -387,23 +560,58 @@ def run_sequence(sequence):
             (len(clip), *latent_shape), generator=clip_noise_generator,
             device="cpu", dtype=torch.float32,
         )
-        temporal_enabled = len(clip) > 1 and temporal_guidance_scale > 0
+        temporal_enabled = (
+            temporal_mode_enabled and len(clip) > 1 and temporal_guidance_scale > 0
+        )
+        cge_enabled = cge_mode_enabled and cge_guidance_scale > 0
+
+        if cge_enabled:
+            if cge_codec is None:
+                raise RuntimeError("CGE was enabled but its VCM-RS codec is missing.")
+            # CGE observes the exact degraded input/mask batch used by this
+            # diffusion clip.  ROI is 1 here, matching cond_fn's contract.
+            pipe.scheduler.x_lr = flow_frames.to(device=device, dtype=torch.float32).mul(2.0).sub(1.0)
+            pipe.scheduler.mask = roi_masks.to(device=device, dtype=torch.float32)
+            # With train-match descriptors, freeze/cache each frame's binary
+            # mask before the finite-difference codec calls start.
+            for local_index in range(len(clip)):
+                cge_codec.prepare_region_mask(
+                    pipe.scheduler.mask[local_index],
+                    pipe.scheduler.x_lr[local_index],
+                )
+            pipe.scheduler.decoder = pipe.vae.decode
+            pipe.scheduler.cond_fn = cge_cond_fn
+            pipe.scheduler.cge_codec_eval_count = 0
+            pipe.scheduler.cge_denoise_step_count = 0
         if temporal_enabled:
             flow_backward, stable_bg, bg_masks = prepare_temporal_conditions(flow_frames, roi_masks)
-            pipe.scheduler.set_temporal_guidance(
-                decoder=pipe.vae.decode, flow_backward=flow_backward, stable_bg=stable_bg,
-                guidance_scale=temporal_guidance_scale, start_step=temporal_start_step,
-                end_step=temporal_end_step, every_n_steps=temporal_every_n_steps,
-                decode_chunk_size=temporal_decode_chunk_size,
-                vae_scaling_factor=pipe.vae.config.scaling_factor,
-                loss_scale=temporal_loss_scale, detach_previous=temporal_detach_previous,
-                loss_type="l2", enabled=True,
-            )
+            if cge_enabled:
+                pipe.scheduler.set_temporal_guidance(
+                    flow_backward=flow_backward,
+                    stable_bg=stable_bg,
+                    guidance_scale=temporal_guidance_scale,
+                    start_step=temporal_start_step,
+                    end_step=temporal_end_step,
+                    every_n_steps=temporal_every_n_steps,
+                    detach_previous=temporal_detach_previous,
+                    loss_type="l2",
+                    enabled=True,
+                )
+            else:
+                pipe.scheduler.set_temporal_guidance(
+                    decoder=pipe.vae.decode, flow_backward=flow_backward, stable_bg=stable_bg,
+                    guidance_scale=temporal_guidance_scale, start_step=temporal_start_step,
+                    end_step=temporal_end_step, every_n_steps=temporal_every_n_steps,
+                    decode_chunk_size=temporal_decode_chunk_size,
+                    vae_scaling_factor=pipe.vae.config.scaling_factor,
+                    loss_scale=temporal_loss_scale, detach_previous=temporal_detach_previous,
+                    loss_type="l2", guidance_space=temporal_guidance_space, enabled=True,
+                )
             print(
                 f"[{sequence.spec.label} clip {clip_idx}] temporal pairs={len(clip) - 1}, "
                 f"stable_bg_ratio={float(stable_bg.mean().detach().cpu()):.4f}"
             )
-        else:
+        elif temporal_mode_enabled:
             pipe.scheduler.clear_temporal_guidance()
 
         sampling_generator = torch.Generator(device=device).manual_seed(sequence_seed)

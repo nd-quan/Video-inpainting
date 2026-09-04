@@ -54,12 +54,24 @@ def _codec_roundtrip01(
             call_key=call_key,
         )
     else:
+        # Fast-CGE keeps the legacy layout: direct ROI fidelity and a VCM-RS
+        # residual on BG only.  It still needs the ROI mask so the train-match
+        # background branch can load/build its complementary descriptor.
+        roundtrip_background = getattr(codec, "roundtrip_background01", None)
         roundtrip = getattr(codec, "roundtrip01", None)
-        if roundtrip is None:
-            raise TypeError(
-                "scheduler.cge_codec must provide roundtrip01 or roundtrip_regions01"
+        if callable(roundtrip_background):
+            output = roundtrip_background(
+                image,
+                roi_mask=roi_mask,
+                call_key=call_key,
             )
-        output = roundtrip(image, call_key=call_key)
+        elif roundtrip is None:
+            raise TypeError(
+                "scheduler.cge_codec must provide roundtrip01, "
+                "roundtrip_background01, or roundtrip_regions01"
+            )
+        else:
+            output = roundtrip(image, call_key=call_key)
     if not isinstance(output, torch.Tensor):
         raise TypeError(f"CGE codec returned {type(output)!r}, expected torch.Tensor")
     if output.shape != image.shape:
