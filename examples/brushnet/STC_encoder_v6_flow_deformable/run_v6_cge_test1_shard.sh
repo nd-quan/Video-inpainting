@@ -10,6 +10,7 @@ fi
 
 shard_index="$1"
 IFS=',' read -r -a gpus <<< "${V6_CGE_GPU_IDS:-1,3,4,5}"
+CGE_SCALE_SCHEDULE="${CGE_SCALE_SCHEDULE:-fixed}"
 if [[ ! "$shard_index" =~ ^[0-9]+$ ]] || (( shard_index >= ${#gpus[@]} )); then
     echo "shard index must be in [0, ${#gpus[@]}); got: $shard_index" >&2
     exit 2
@@ -43,6 +44,7 @@ CGE_VCMRS_MAX_PARALLEL=1 \
     --clip_stride 12 \
     --cge_start_step 35 \
     --cge_end_step 50 \
+    --cge_scale_schedule "$CGE_SCALE_SCHEDULE" \
     --cge_every_n_steps 1 \
     --cge_max_evals 2 \
     --output_dir "$output_root" \

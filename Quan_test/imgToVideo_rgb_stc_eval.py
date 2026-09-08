@@ -75,6 +75,14 @@ def parse_args():
     )
     parser.add_argument("--eval_root", type=Path, default=DEFAULT_EVAL_ROOT)
     parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help=(
+            "Recursively discover clip folders below --eval_root. Use this for "
+            "sharded evaluator output such as <eval_root>/shard-0/<clip>."
+        ),
+    )
+    parser.add_argument(
         "--output_dir",
         type=Path,
         default=None,
@@ -155,16 +163,18 @@ def read_clip_frames(clip_dir: Path, frame_kind: str) -> List[Tuple[int, Path]]:
 
 
 def discover_sources(
-    eval_root: Path, frame_kind: str
+    eval_root: Path, frame_kind: str, recursive: bool = False
 ) -> Mapping[str, List[Tuple[int, int, int, Path]]]:
     """Return sequence -> (clip start, clip end, frame id, image path)."""
     by_sequence: DefaultDict[str, List[Tuple[int, int, int, Path]]] = defaultdict(list)
-    for clip_dir in sorted(path for path in eval_root.iterdir() if path.is_dir()):
+    candidates = eval_root.rglob("*") if recursive else eval_root.iterdir()
+    for clip_dir in sorted(path for path in candidates if path.is_dir()):
         # Evaluation roots can also contain auxiliary folders (for example,
         # ``terminal_logs`` and the generated ``videos`` folder).  Only
         # evaluator clip directories follow the required name convention.
         if CLIP_DIRECTORY_PATTERN.fullmatch(clip_dir.name) is None:
-            print(f"Skipping non-clip directory: {clip_dir}")
+            if not recursive:
+                print(f"Skipping non-clip directory: {clip_dir}")
             continue
         sequence, start, end = parse_clip_directory(clip_dir)
         frames = read_clip_frames(clip_dir, frame_kind)
@@ -283,6 +293,7 @@ def main():
     manifest: Dict[str, object] = {
         "eval_root": str(eval_root),
         "output_dir": str(output_dir),
+        "recursive": args.recursive,
         "selection": args.selection,
         "fourcc": args.fourcc,
         "frame_kinds": args.frame_kinds,
@@ -290,7 +301,7 @@ def main():
     }
     requested_sequences = set(args.sequences) if args.sequences else None
     for frame_kind in args.frame_kinds:
-        discovered = discover_sources(eval_root, frame_kind)
+        discovered = discover_sources(eval_root, frame_kind, recursive=args.recursive)
         sequence_names = sorted(discovered)
         if requested_sequences is not None:
             unknown = sorted(requested_sequences - set(sequence_names))

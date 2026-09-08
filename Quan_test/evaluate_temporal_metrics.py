@@ -231,6 +231,7 @@ def evaluate_folder(root: Path, folder: Path) -> Optional[SequenceMetrics]:
 
 
 def aggregate_by_method(metrics: Iterable[SequenceMetrics]) -> Dict[str, Dict[str, float]]:
+    """Pair-weighted aggregate: every adjacent frame pair has equal weight."""
     grouped: Dict[str, List[SequenceMetrics]] = {}
     for item in metrics:
         grouped.setdefault(item.method, []).append(item)
@@ -246,6 +247,32 @@ def aggregate_by_method(metrics: Iterable[SequenceMetrics]) -> Dict[str, Dict[st
             "warping_error_l1": weighted_mean([item.warping_error_l1 for item in items], weights, weight_sum),
             "warping_error_l2": weighted_mean([item.warping_error_l2 for item in items], weights, weight_sum),
             "frame_similarity_ssim": weighted_mean([item.frame_similarity_ssim for item in items], weights, weight_sum),
+        }
+    return aggregate
+
+
+def aggregate_macro_by_method(metrics: Iterable[SequenceMetrics]) -> Dict[str, Dict[str, float]]:
+    """Macro aggregate: every sequence has equal weight regardless of length."""
+
+    grouped: Dict[str, List[SequenceMetrics]] = {}
+    for item in metrics:
+        grouped.setdefault(item.method, []).append(item)
+
+    aggregate = {}
+    for method, items in grouped.items():
+        aggregate[method] = {
+            "sequence_count": float(len(items)),
+            "frame_count": float(sum(item.frame_count for item in items)),
+            "pair_count": float(sum(item.pair_count for item in items)),
+            "warping_error_l1": mean_ignore_nan(
+                [item.warping_error_l1 for item in items]
+            ),
+            "warping_error_l2": mean_ignore_nan(
+                [item.warping_error_l2 for item in items]
+            ),
+            "frame_similarity_ssim": mean_ignore_nan(
+                [item.frame_similarity_ssim for item in items]
+            ),
         }
     return aggregate
 
@@ -271,11 +298,17 @@ def write_csv(path: Path, rows: List[SequenceMetrics]) -> None:
             writer.writerow(asdict(row))
 
 
-def write_json(path: Path, rows: List[SequenceMetrics], aggregate: Dict[str, Dict[str, float]]) -> None:
+def write_json(
+    path: Path,
+    rows: List[SequenceMetrics],
+    aggregate: Dict[str, Dict[str, float]],
+    aggregate_macro: Dict[str, Dict[str, float]],
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "per_sequence": [asdict(row) for row in rows],
         "aggregate_by_method": aggregate,
+        "aggregate_macro_by_method": aggregate_macro,
     }
     with path.open("w") as f:
         json.dump(payload, f, indent=2)
@@ -334,10 +367,11 @@ def main() -> None:
         raise RuntimeError("No valid sequences were evaluated.")
 
     aggregate = aggregate_by_method(rows)
+    aggregate_macro = aggregate_macro_by_method(rows)
     write_csv(csv_path, rows)
-    write_json(json_path, rows, aggregate)
+    write_json(json_path, rows, aggregate, aggregate_macro)
 
-    print("\nAggregate by method:", flush=True)
+    print("\nAggregate by method (pair-weighted):", flush=True)
     for method, values in aggregate.items():
         print(
             f"{method}: "
@@ -345,6 +379,16 @@ def main() -> None:
             f"WE-L2={values['warping_error_l2']:.6f}, "
             f"FrameSSIM={values['frame_similarity_ssim']:.6f}, "
             f"pairs={int(values['pair_count'])}",
+            flush=True,
+        )
+    print("\nAggregate by method (sequence macro-average):", flush=True)
+    for method, values in aggregate_macro.items():
+        print(
+            f"{method}: "
+            f"WE-L1={values['warping_error_l1']:.6f}, "
+            f"WE-L2={values['warping_error_l2']:.6f}, "
+            f"FrameSSIM={values['frame_similarity_ssim']:.6f}, "
+            f"sequences={int(values['sequence_count'])}",
             flush=True,
         )
     print(f"\nSaved CSV: {csv_path}", flush=True)

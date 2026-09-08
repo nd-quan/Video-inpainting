@@ -49,7 +49,10 @@ LONG_SEQUENCE_SPECS: Tuple[SequenceSpec, ...] = (
     SequenceSpec("test_2", "BQMall", "Class_C", "BQMall"),
     SequenceSpec("test_2", "BQSquare", "Class_D", "BQSquare"),
     SequenceSpec("test_2", "BQTerrace", "Class_B", "BQTerrace"),
+    SequenceSpec("test_2", "Cactus", "Class_B", "Cactus"),
     SequenceSpec("test_2", "FourPeople", "Class_E", "FourPeople"),
+    SequenceSpec("test_2", "Kimono", "Class_B", "Kimono"),
+    SequenceSpec("test_2", "KristenAndSara", "Class_E", "KristenAndSara"),
     SequenceSpec("test_2", "PeopleOnStreet", "Class_A", "PeopleOnStreet"),
 )
 
@@ -109,7 +112,7 @@ def _detect_layout(root: Path) -> str:
     flat_markers = tuple(
         root / spec.label / subdirectory
         for spec in LONG_SEQUENCE_SPECS
-        for subdirectory in ("inputs", "masks")
+        for subdirectory in ("inputs", "intpus", "masks")
     )
     if any(path.exists() for path in flat_markers):
         return "flat"
@@ -121,12 +124,24 @@ def _detect_layout(root: Path) -> str:
     )
 
 
+def _flat_input_directory(root: Path, spec: SequenceSpec) -> Path:
+    """Return the input directory, including the legacy KristenAndSara typo."""
+    sequence_root = root / spec.label
+    canonical = sequence_root / "inputs"
+    if canonical.is_dir():
+        return canonical
+    legacy_typo = sequence_root / "intpus"
+    if legacy_typo.is_dir():
+        return legacy_typo
+    return canonical
+
+
 def _flat_specs_present(root: Path, specs: Sequence[SequenceSpec]) -> List[SequenceSpec]:
     """Return only complete flat-layout sequences available at ``root``."""
     present = []
     for spec in specs:
         sequence_root = root / spec.label
-        if (sequence_root / "inputs").is_dir() and (sequence_root / "masks").is_dir():
+        if _flat_input_directory(root, spec).is_dir() and (sequence_root / "masks").is_dir():
             present.append(spec)
     return present
 
@@ -137,7 +152,7 @@ def _sequence_directories(root: Path, spec: SequenceSpec, layout: str) -> Tuple[
             root / "input" / spec.class_name / spec.source_name,
             root / "mask" / spec.class_name / spec.source_name,
         )
-    return root / spec.label / "inputs", root / spec.label / "masks"
+    return _flat_input_directory(root, spec), root / spec.label / "masks"
 
 
 def load_sequences(

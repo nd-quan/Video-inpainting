@@ -61,6 +61,12 @@ def add_cge_arguments(parser) -> None:
     # Do not let a CGE run resume into, or overwrite, the plain V6 output tree.
     parser.set_defaults(output_dir=DEFAULT_OUTPUT)
     parser.add_argument("--cge_guidance_scale", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--cge_scale_schedule",
+        choices=("fixed", "noise_level"),
+        default="fixed",
+        help="CGE scale: fixed or sqrt(1-alpha_bar_t)-scaled noise_level.",
+    )
     parser.add_argument("--cge_start_step", type=int, default=35)
     parser.add_argument(
         "--cge_end_step",
@@ -115,6 +121,8 @@ def validate_cge_arguments(args) -> None:
     end_step = _effective_end_step(args)
     if args.cge_guidance_scale < 0.0:
         raise ValueError("cge_guidance_scale must be non-negative")
+    if args.cge_scale_schedule not in {"fixed", "noise_level"}:
+        raise ValueError("Unsupported cge_scale_schedule")
     if args.cge_start_step < 0:
         raise ValueError("cge_start_step must be non-negative")
     if not args.cge_start_step < end_step:
@@ -225,6 +233,7 @@ def cge_preflight(args):
                 "cge_every_n_steps": int(args.cge_every_n_steps),
                 "cge_max_evals_per_clip": int(args.cge_max_evals),
                 "cge_guidance_scale": float(args.cge_guidance_scale),
+                "cge_scale_schedule": str(args.cge_scale_schedule),
                 "cge_operator": cge_operator,
                 "codec_calls_per_frame_per_eval": codec_calls_per_frame_per_eval,
                 "roi_fidelity": roi_fidelity,
@@ -257,6 +266,7 @@ def load_models_with_cge_scheduler(args, paths, device: torch.device):
     scheduler.vae_scaling_factor = float(pipe.vae.config.scaling_factor)
     scheduler.cge_codec = VCMRSDualRegionCodec.from_env()
     scheduler.guidance_scale_cge = float(args.cge_guidance_scale)
+    scheduler.cge_scale_schedule = str(args.cge_scale_schedule)
     scheduler.cge_start_step = int(args.cge_start_step)
     scheduler.cge_end_step = _effective_end_step(args)
     scheduler.cge_every_n_steps = int(args.cge_every_n_steps)
@@ -328,10 +338,20 @@ def after_pipeline_call(
 ) -> Dict[str, object]:
     del sample, args, device
     scheduler = pipe.scheduler
-    return {
+    stats: Dict[str, object] = {
         "cge_codec_evaluations": int(scheduler.cge_codec_eval_count),
         "cge_denoise_steps_seen": int(scheduler.cge_denoise_step_count),
     }
+    for metric_name, value in (
+        ("cge_last_guidance_scale_base", getattr(scheduler, "last_cge_guidance_scale_base", None)),
+        ("cge_last_guidance_scale_multiplier", getattr(scheduler, "last_cge_guidance_scale_multiplier", None)),
+        ("cge_last_guidance_scale_effective", getattr(scheduler, "last_cge_guidance_scale_effective", None)),
+    ):
+        if value is not None:
+            stats[metric_name] = float(value)
+    if getattr(scheduler, "last_cge_scale_schedule", None) is not None:
+        stats["cge_last_scale_schedule"] = str(scheduler.last_cge_scale_schedule)
+    return stats
 
 
 def clear_pipeline_call(*, pipe) -> None:
@@ -345,6 +365,10 @@ def clear_pipeline_call(*, pipe) -> None:
         scheduler.mask = None
         scheduler.cge_codec_eval_count = 0
         scheduler.cge_denoise_step_count = 0
+        scheduler.last_cge_guidance_scale_base = None
+        scheduler.last_cge_guidance_scale_multiplier = None
+        scheduler.last_cge_guidance_scale_effective = None
+        scheduler.last_cge_scale_schedule = None
 
 
 def main() -> None:

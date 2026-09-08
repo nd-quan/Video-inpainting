@@ -292,6 +292,25 @@ def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index
         "inference_component": "stc_v8_model",
         "initialization_component": _resolved_initialization(args),
         "training_stage": args.training_stage,
+        # Keep every architecture option used by the exact-resume contract in
+        # the checkpoint metadata.  The adapter config contains these values,
+        # but the contract is intentionally checked before model loading.
+        "relative_position_max_distance": args.relative_position_max_distance,
+        "cross_clip_memory_frames": args.cross_clip_memory_frames,
+        "detach_cross_clip_memory": args.detach_cross_clip_memory,
+        "cross_clip_transition_count": getattr(
+            args, "cross_clip_transition_count", None
+        ),
+        "cross_clip_run_count": getattr(args, "cross_clip_run_count", None),
+        "cross_clip_pair_index_sha256": getattr(
+            args, "cross_clip_pair_index_sha256", None
+        ),
+        "cross_batch_mutable_state": False,
+        "train_dataloader_drop_last": True,
+        "deform_hidden_channels": args.deform_hidden_channels,
+        "deform_kernel_size": args.deform_kernel_size,
+        "deform_groups": args.deform_groups,
+        "deform_residual_max_displacement": args.deform_residual_max_displacement,
         "trainable_components": _trainable_component_names(args),
         "legacy_flow_head_frozen": True,
         "spatial_encoder_frozen": True,

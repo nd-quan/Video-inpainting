@@ -216,10 +216,60 @@ def project_l2_ball(tensor: torch.FloatTensor, radius: float) -> torch.FloatTens
     return tensor * scale.reshape(-1, 1, 1, 1)
 
 
+def _resolve_cge_guidance_scale(args, timestep) -> float:
+    """Return the CGE correction scale for one reverse-diffusion timestep.
+
+    ``fixed`` preserves the historical evaluator behaviour.  ``noise_level``
+    implements GGDR's dynamic-gradient scaling,
+
+    ``s_t = sqrt(1 - alpha_bar_t) * s_tilde``.
+
+    Here ``s_tilde`` is ``guidance_scale_cge`` (or ``CGE_GUIDANCE_SCALE``),
+    and ``timestep`` is the *training* timestep selected by DDIM, not the
+    zero-based denoising-loop index.  Keeping this helper in the common CGE
+    scheduler makes the schedule available to V6, V8, and fixedBG evaluators
+    without changing their default fixed-scale results.
+    """
+
+    base_scale = float(
+        getattr(args, "guidance_scale_cge", os.environ.get("CGE_GUIDANCE_SCALE", "0.0001"))
+    )
+    if base_scale < 0.0:
+        raise ValueError("CGE guidance scale must be non-negative")
+    schedule = str(
+        getattr(args, "cge_scale_schedule", os.environ.get("CGE_SCALE_SCHEDULE", "fixed"))
+    ).strip().lower()
+    if schedule == "fixed":
+        multiplier = 1.0
+    elif schedule == "noise_level":
+        if args is None or not hasattr(args, "alphas_cumprod"):
+            raise RuntimeError(
+                "CGE noise_level schedule requires the scheduler's alphas_cumprod"
+            )
+        timestep_index = int(timestep.item()) if torch.is_tensor(timestep) else int(timestep)
+        alpha_bar = float(args.alphas_cumprod[timestep_index].detach().float().cpu())
+        multiplier = math.sqrt(max(0.0, 1.0 - alpha_bar))
+    else:
+        raise ValueError(
+            "cge_scale_schedule must be 'fixed' or 'noise_level', got "
+            f"{schedule!r}"
+        )
+
+    effective_scale = base_scale * multiplier
+    if args is not None:
+        # Keep the most recent actual value in the scheduler so every
+        # evaluator can store it in per-clip metrics without recomputation.
+        args.last_cge_guidance_scale_base = base_scale
+        args.last_cge_guidance_scale_multiplier = multiplier
+        args.last_cge_guidance_scale_effective = effective_scale
+        args.last_cge_scale_schedule = schedule
+    return effective_scale
+
+
 
 def cond_fn(x0, t, x_lr, mask, decoder, args=None):
     with torch.enable_grad():
-        guidance_scale = float(getattr(args, "guidance_scale_cge", os.environ.get("CGE_GUIDANCE_SCALE", "0.0001")))
+        guidance_scale = _resolve_cge_guidance_scale(args, t)
         per_frame_cge = _as_bool(getattr(args, "per_frame_cge", _env_flag("CGE_PER_FRAME", "0")))
         scaling_factor = float(getattr(args, "vae_scaling_factor", 1.0))
         codec = getattr(args, "cge_codec", None)

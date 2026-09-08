@@ -30,6 +30,7 @@ export CGE_START_STEP="${CGE_START_STEP:-25}"
 export CGE_END_STEP="${CGE_END_STEP:-35}"
 export CGE_EVERY_N_STEPS="${CGE_EVERY_N_STEPS:-1}"
 export CGE_GUIDANCE_SCALE="${CGE_GUIDANCE_SCALE:-0.0001}"
+export CGE_SCALE_SCHEDULE="${CGE_SCALE_SCHEDULE:-fixed}"
 export CGE_CODEC_MODE="${CGE_CODEC_MODE:-bg_only}"
 
 mkdir -p "${OUTPUT_ROOT}/terminal_logs"
@@ -39,4 +40,3 @@ cd "${BRUSHNET_ROOT}"
 "${PYTHON_BIN}" -u \
   examples/brushnet/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py \
   2>&1 | tee "${LOG_PATH}"
-

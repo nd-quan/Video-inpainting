@@ -216,6 +216,137 @@ def bg_temporal_loss(
     return numerator / denominator
 
 
+def rgb_temporal_loss_gradient_streaming(
+    *,
+    decoder: Callable,
+    latents: torch.FloatTensor,
+    flow_backward: torch.FloatTensor,
+    stable_bg: torch.FloatTensor,
+    scaling_factor: float,
+    charbonnier_eps: float,
+    loss_scale: float,
+    detach_previous: bool,
+    loss_type: str,
+) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+    """Compute the exact RGB temporal gradient one adjacent pair at a time.
+
+    Keeping all decoded-frame autograd graphs alive makes a 16-frame SD1.5
+    clip exceed a 48 GiB GPU. Accumulating each pair's numerator gradient and
+    dividing once by the global mask denominator is algebraically equivalent
+    to :func:`bg_temporal_loss`, while retaining only one VAE graph at a time
+    when ``detach_previous`` is enabled.
+    """
+    frame_count = int(latents.shape[0])
+    temporal_grad = torch.zeros_like(latents, dtype=torch.float32)
+    temporal_loss = torch.zeros((), device=latents.device, dtype=torch.float32)
+    previous_decoded = None
+
+    # A no-grad probe gives the decoder's real output size and doubles as the
+    # first previous frame in the common detach_previous=True mode.
+    with torch.no_grad():
+        decoded_probe = decode_with_chunks(
+            decoder=decoder,
+            latents=latents[:1],
+            scaling_factor=scaling_factor,
+            chunk_size=1,
+        ).float()
+    if detach_previous:
+        previous_decoded = decoded_probe
+
+    output_size = decoded_probe.shape[-2:]
+    pair_masks = F.interpolate(
+        stable_bg.float(), size=output_size, mode="nearest"
+    ).to(device=latents.device)
+    with torch.no_grad():
+        _, pair_in_bounds = backward_warp(
+            torch.zeros(
+                (frame_count - 1, 1, *output_size),
+                device=latents.device,
+                dtype=torch.float32,
+            ),
+            flow_backward.to(device=latents.device, dtype=torch.float32),
+        )
+    pair_masks = pair_masks * pair_in_bounds
+    denominator = (
+        pair_masks.sum() * int(decoded_probe.shape[1])
+    ).clamp_min(1.0)
+    del decoded_probe, pair_in_bounds
+
+    for pair_index in range(frame_count - 1):
+        current_latent = (
+            latents[pair_index + 1 : pair_index + 2]
+            .detach()
+            .clone()
+            .requires_grad_(True)
+        )
+        current_decoded = decode_with_chunks(
+            decoder=decoder,
+            latents=current_latent,
+            scaling_factor=scaling_factor,
+            chunk_size=1,
+        ).float()
+
+        if detach_previous:
+            previous_latent = None
+        else:
+            previous_latent = (
+                latents[pair_index : pair_index + 1]
+                .detach()
+                .clone()
+                .requires_grad_(True)
+            )
+            previous_decoded = decode_with_chunks(
+                decoder=decoder,
+                latents=previous_latent,
+                scaling_factor=scaling_factor,
+                chunk_size=1,
+            ).float()
+
+        pair_flow = flow_backward[pair_index : pair_index + 1].to(
+            device=current_decoded.device, dtype=current_decoded.dtype
+        )
+        warped_previous, _ = backward_warp(previous_decoded, pair_flow)
+        pair_mask = pair_masks[pair_index : pair_index + 1]
+        difference = current_decoded - warped_previous
+        if loss_type == "l1":
+            robust_error = difference.abs()
+        elif loss_type == "l2":
+            robust_error = difference.square()
+        elif loss_type == "charbonnier":
+            robust_error = torch.sqrt(
+                difference.square() + float(charbonnier_eps) ** 2
+            )
+        else:
+            raise ValueError(f"Unknown temporal loss type: {loss_type}")
+
+        pair_loss = (robust_error * pair_mask).sum() / denominator
+        gradient_targets = (current_latent,)
+        if previous_latent is not None:
+            gradient_targets = (previous_latent, current_latent)
+        pair_gradients = torch.autograd.grad(
+            pair_loss * float(loss_scale),
+            gradient_targets,
+            retain_graph=False,
+            create_graph=False,
+        )
+        if previous_latent is not None:
+            temporal_grad[pair_index] += (
+                pair_gradients[0].squeeze(0).float() / float(loss_scale)
+            )
+            current_gradient = pair_gradients[1]
+        else:
+            current_gradient = pair_gradients[0]
+        temporal_grad[pair_index + 1] += (
+            current_gradient.squeeze(0).float() / float(loss_scale)
+        )
+        temporal_loss += pair_loss.detach().float()
+
+        if detach_previous:
+            previous_decoded = current_decoded.detach()
+
+    return temporal_loss, temporal_grad
+
+
 class TemporalDDIMScheduler(BaseDDIMScheduler):
     """DDIM scheduler with optional training-free stable-BG temporal guidance."""
 
@@ -411,49 +542,49 @@ class TemporalDDIMScheduler(BaseDDIMScheduler):
             )
 
         with torch.enable_grad():
-            z0 = pred_original_sample.detach().clone().requires_grad_(True)
+            z0 = pred_original_sample.detach().clone()
             if guidance_space == "rgb":
-                temporal_values = decode_with_chunks(
+                temporal_loss, temporal_grad = rgb_temporal_loss_gradient_streaming(
                     decoder=decoder,
                     latents=z0,
                     scaling_factor=float(getattr(self, "temporal_vae_scaling_factor", 0.18215)),
-                    chunk_size=int(getattr(self, "temporal_decode_chunk_size", 1)),
+                    flow_backward=flow_backward,
+                    stable_bg=stable_bg,
+                    charbonnier_eps=float(getattr(self, "temporal_charbonnier_eps", 1e-3)),
+                    loss_scale=float(getattr(self, "temporal_loss_scale", 1024.0)),
+                    detach_previous=bool(getattr(self, "temporal_detach_previous", False)),
+                    loss_type=getattr(self, "temporal_loss_type", "l2"),
                 )
             else:
                 # z0 is the VAE-scaled predicted-clean latent used by the
                 # diffusion model.  Do not divide by scaling_factor here:
                 # doing so only rescales the loss/gradient, not the geometry.
-                temporal_values = z0
-            if not bool(torch.isfinite(temporal_values).all()):
-                return self._skip_temporal_guidance(
-                    f"non-finite {guidance_space} temporal prediction",
-                    pred_original_sample,
+                z0.requires_grad_(True)
+                temporal_loss = bg_temporal_loss(
+                    predicted_images=z0,
+                    flow_backward=flow_backward,
+                    stable_bg=stable_bg,
+                    charbonnier_eps=float(getattr(self, "temporal_charbonnier_eps", 1e-3)),
+                    detach_previous=bool(getattr(self, "temporal_detach_previous", False)),
+                    loss_type=getattr(self, "temporal_loss_type", "l2"),
                 )
-
-            temporal_loss = bg_temporal_loss(
-                predicted_images=temporal_values,
-                flow_backward=flow_backward,
-                stable_bg=stable_bg,
-                charbonnier_eps=float(getattr(self, "temporal_charbonnier_eps", 1e-3)),
-                detach_previous=bool(getattr(self, "temporal_detach_previous", False)),
-                loss_type=getattr(self, "temporal_loss_type", "l2")
-            )
             if not bool(torch.isfinite(temporal_loss)):
                 return self._skip_temporal_guidance(
                     "non-finite temporal loss",
                     pred_original_sample,
                 )
 
-            # z0 and the VAE run in FP16 during inference. Scaling the loss keeps
-            # small gradients representable until they are converted to FP32.
-            loss_scale = float(getattr(self, "temporal_loss_scale", 1024.0))
-            scaled_temporal_grad = torch.autograd.grad(
-                temporal_loss * loss_scale,
-                z0,
-                retain_graph=False,
-                create_graph=False,
-            )[0]
-            temporal_grad = scaled_temporal_grad.float() / loss_scale
+            if guidance_space == "latent":
+                # z0 and the diffusion model run in FP16 during inference.
+                # Scaling keeps small gradients representable before FP32.
+                loss_scale = float(getattr(self, "temporal_loss_scale", 1024.0))
+                scaled_temporal_grad = torch.autograd.grad(
+                    temporal_loss * loss_scale,
+                    z0,
+                    retain_graph=False,
+                    create_graph=False,
+                )[0]
+                temporal_grad = scaled_temporal_grad.float() / loss_scale
 
         frame_bg_mask = self._frame_bg_mask(
             stable_bg=stable_bg,

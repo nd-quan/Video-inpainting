@@ -128,6 +128,7 @@ temporal_bg_mask_mode = os.environ.get(
 ).lower()
 guidance_mode = os.environ.get("GUIDANCE_MODE", "temporal").lower()
 cge_guidance_scale = float(os.environ.get("CGE_GUIDANCE_SCALE", "0.0001"))
+cge_scale_schedule = os.environ.get("CGE_SCALE_SCHEDULE", "fixed").strip().lower()
 cge_start_step = int(os.environ.get("CGE_START_STEP", "25"))
 _cge_end_raw = os.environ.get("CGE_END_STEP", "35").strip().lower()
 cge_end_step = None if _cge_end_raw in {"", "none"} else int(_cge_end_raw)
@@ -170,6 +171,8 @@ if guidance_mode not in {"temporal", "cge", "combined"}:
     raise ValueError("GUIDANCE_MODE must be 'temporal', 'cge', or 'combined'.")
 if cge_guidance_scale < 0.0:
     raise ValueError("CGE_GUIDANCE_SCALE must be non-negative.")
+if cge_scale_schedule not in {"fixed", "noise_level"}:
+    raise ValueError("CGE_SCALE_SCHEDULE must be 'fixed' or 'noise_level'.")
 if cge_start_step < 0 or (cge_end_step is not None and cge_end_step <= cge_start_step):
     raise ValueError("Invalid [CGE_START_STEP, CGE_END_STEP) window.")
 if cge_every_n_steps < 1:
@@ -272,6 +275,7 @@ if cge_mode_enabled:
     )
     pipe.scheduler.cge_codec = cge_codec
     pipe.scheduler.guidance_scale_cge = cge_guidance_scale
+    pipe.scheduler.cge_scale_schedule = cge_scale_schedule
     pipe.scheduler.cge_start_step = cge_start_step
     pipe.scheduler.cge_end_step = cge_end_step
     pipe.scheduler.cge_every_n_steps = cge_every_n_steps
@@ -282,7 +286,7 @@ if cge_mode_enabled:
     pipe.scheduler.direct_cge_guidance = True
     print(
         "[CGE] enabled, "
-        f"codec={cge_codec_mode}, scale={cge_guidance_scale}, "
+        f"codec={cge_codec_mode}, scale={cge_guidance_scale}, schedule={cge_scale_schedule}, "
         f"window=[{cge_start_step}, {cge_end_step}), every={cge_every_n_steps}, "
         f"per_frame={cge_per_frame}"
     )
@@ -517,6 +521,7 @@ def run_sequence(sequence):
         else {
             "codec_mode": cge_codec_mode,
             "guidance_scale": cge_guidance_scale,
+            "scale_schedule": cge_scale_schedule,
             "window": [cge_start_step, cge_end_step],
             "every_n_steps": cge_every_n_steps,
             "max_evals": cge_max_evals,

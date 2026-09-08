@@ -541,6 +541,11 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
                 kind: sequence_root / source_kind
                 for kind, source_kind in self._SOURCE_KINDS.items()
             }
+            # KristenAndSara was exported once with the legacy typo
+            # ``intpus``.  Accept it read-only rather than requiring a dataset
+            # rename, while preferring the canonical path whenever present.
+            if not kind_roots["input"].is_dir() and (sequence_root / "intpus").is_dir():
+                kind_roots["input"] = sequence_root / "intpus"
             missing_roots = [
                 str(root) for root in kind_roots.values() if not root.is_dir()
             ]
@@ -558,6 +563,14 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
                 kind: {path.name: path for path in root.glob("*.png") if path.is_file()}
                 for kind, root in kind_roots.items()
             }
+            # A few flat test exports include ``root/videos/{gt,inputs,masks}``
+            # containing MP4 previews alongside the canonical per-sequence PNG
+            # trees.  It looks structurally like a sequence, but must not be
+            # interpreted as one by the frame evaluator.
+            if sequence_root.name.lower() in {"video", "videos"} and not any(
+                files.values()
+            ):
+                continue
             gt_names = set(files["GT"])
             input_names = set(files["input"])
             mask_names = set(files["mask"])

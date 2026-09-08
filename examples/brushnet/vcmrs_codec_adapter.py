@@ -899,6 +899,15 @@ class VCMRSBackgroundOnlyCodec:
     def __getattr__(self, name):
         """Expose read-only VCM-RS metadata used by existing CGE runners."""
 
+        # The scheduler detects dual-region codecs by probing for
+        # roundtrip_regions01.  Forwarding it (or the dual-region alias
+        # roundtrip01) would silently enable ROI encoding and replace the
+        # direct ROI fidelity loss with a codec residual over both regions.
+        if name in {"roundtrip_regions01", "roundtrip01"}:
+            raise AttributeError(
+                f"{type(self).__name__} does not expose {name}; "
+                "use roundtrip_background01"
+            )
         return getattr(self.regional_codec, name)
 
     def prepare_region_mask(self, roi_mask: torch.Tensor, image: torch.Tensor) -> None:

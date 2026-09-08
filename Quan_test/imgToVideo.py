@@ -39,7 +39,10 @@ SEQUENCE_FPS = {
     "BQMall": 60,
     "BQSquare": 60,
     "BQTerrace": 60,
+    "Cactus": 50,
     "FourPeople": 60,
+    "Kimono": 24,
+    "KristenAndSara": 60,
     "PeopleOnStreet": 30,
 }
 
