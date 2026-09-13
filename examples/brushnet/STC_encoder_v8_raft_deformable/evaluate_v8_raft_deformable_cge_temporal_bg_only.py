@@ -188,13 +188,13 @@ def preflight(args):
     # contract active for both condition construction and sampler guidance.
     dataset, paths = v8_evaluator.preflight(args)
     shard = _select_branch_shard(dataset, args)
-    codec = VCMRSBackgroundOnlyCodec.from_env()
+    codec = VCMRSBackgroundOnlyCodec.from_env() if args.cge_max_evals != 0 else None
     print(
         json.dumps(
             {
                 "v8_cge_temporal": "ok",
                 "scheduler": "CGETemporalDDIMScheduler",
-                "v8_condition_flow": "frozen_V7_RAFT_student",
+                "v8_condition_flow": args.condition_flow_source,
                 "guidance_flow": "frozen_V7_RAFT_student_bidirectional",
                 "guidance_flow_input": "degraded RGB [-1,1] only",
                 "temporal_region": "forward_backward_visible_stable_BG",
@@ -205,7 +205,7 @@ def preflight(args):
                 ],
                 "temporal_scale": float(args.temporal_guidance_scale),
                 "cge_region": "background_only_M_BG",
-                "cge_operator": str(codec.cge_operator),
+                "cge_operator": str(codec.cge_operator) if codec is not None else "disabled",
                 "cge_window": [int(args.cge_start_step), int(args.cge_end_step)],
                 "cge_scale": float(args.cge_guidance_scale),
                 "cge_scale_schedule": str(args.cge_scale_schedule),
@@ -228,7 +228,7 @@ def load_models_with_cge_temporal_scheduler(args, paths, device: torch.device):
     scheduler.per_frame_cge = True
     scheduler.decode_chunk_size = int(args.cge_decode_chunk_size)
     scheduler.vae_scaling_factor = float(pipe.vae.config.scaling_factor)
-    scheduler.cge_codec = VCMRSBackgroundOnlyCodec.from_env()
+    scheduler.cge_codec = VCMRSBackgroundOnlyCodec.from_env() if args.cge_max_evals != 0 else None
     scheduler.guidance_scale_cge = float(args.cge_guidance_scale)
     scheduler.cge_scale_schedule = str(args.cge_scale_schedule)
     scheduler.cge_start_step = int(args.cge_start_step)
@@ -272,6 +272,17 @@ def _configure_cge(
     device: torch.device,
 ) -> Dict[str, object]:
     """Attach exact degraded frames and per-frame ROI masks to CGE."""
+
+    if scheduler.cge_max_evals == 0:
+        # DDIM checks cond_fn even when no CGE evaluations are requested.
+        # Initialize on the first clip and clear any previously attached state.
+        scheduler.cond_fn = None
+        scheduler.decoder = None
+        scheduler.x_lr = None
+        scheduler.mask = None
+        scheduler.cge_codec_eval_count = 0
+        scheduler.cge_denoise_step_count = 0
+        return {"cge_enabled": 0}
 
     # V8/STC masks are M_BG=1, while VCM-RS CGE expects M_ROI=1.
     x_lr = sample["conditioning_pixel_values"].to(

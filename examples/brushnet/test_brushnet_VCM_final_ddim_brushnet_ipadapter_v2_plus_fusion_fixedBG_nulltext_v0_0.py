@@ -116,7 +116,11 @@ def parse_args():
     parser.add_argument("--no_blend", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max_images", type=int, default=None)
+    parser.add_argument("--matched_temporal_clip_size", type=int, default=0,
+                        help="Match temporal CPU noise generation per clip; 0 keeps legacy behavior.")
     args = parser.parse_args()
+    if args.matched_temporal_clip_size < 0:
+        parser.error("--matched_temporal_clip_size must be nonnegative")
     if args.max_images is not None and args.max_images <= 0:
         parser.error("--max_images must be positive")
     return args
@@ -241,7 +245,8 @@ def main():
     require_path(args.base_model_path, "dir")
 
     pipe, ip_model = build_pipeline(args, device)
-    shared_bg_generator = torch.Generator(device).manual_seed(args.shared_bg_seed)
+    noise_device = "cpu" if args.matched_temporal_clip_size else device
+    shared_bg_generator = torch.Generator(noise_device).manual_seed(args.shared_bg_seed)
     shared_bg_noise = torch.randn(
         (
             1,
@@ -250,9 +255,9 @@ def main():
             args.resolution // pipe.vae_scale_factor,
         ),
         generator=shared_bg_generator,
-        device=device,
-        dtype=pipe.dtype,
-    )
+        device=noise_device,
+        dtype=torch.float32 if args.matched_temporal_clip_size else pipe.dtype,
+    ).to(device=device, dtype=pipe.dtype)
 
     transform = transforms.Compose([transforms.Resize((args.resolution, args.resolution))])
 
@@ -307,7 +312,19 @@ def main():
             mask_image = transform(mask_image)
 
             fg_pil, bg_pil = prepare_fg_bg(init_image_np, mask_np, transform)
+            noise_kwargs = {}
+            if args.matched_temporal_clip_size:
+                clip_idx, local_idx = divmod(orig_idx, args.matched_temporal_clip_size)
+                count = min(args.matched_temporal_clip_size,
+                            len(image_paths) - clip_idx * args.matched_temporal_clip_size)
+                noise = torch.randn(
+                    (count, *shared_bg_noise.shape[1:]),
+                    generator=torch.Generator("cpu").manual_seed(args.seed + clip_idx),
+                    dtype=torch.float32,
+                )
+                noise_kwargs["latents"] = noise[local_idx:local_idx + 1].to(device=device, dtype=pipe.dtype)
             result = ip_model.generate_fgbg(
+                **noise_kwargs,
                 fg_pil_image=fg_pil,
                 bg_pil_image=bg_pil,
                 prompt=args.prompt,

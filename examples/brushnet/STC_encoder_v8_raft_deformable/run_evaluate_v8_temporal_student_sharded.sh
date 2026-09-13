@@ -89,6 +89,9 @@ COMMON_ARGS=(
     --temporal_visibility_alpha "${TEMPORAL_VISIBILITY_ALPHA}"
     --temporal_visibility_beta "${TEMPORAL_VISIBILITY_BETA}"
 )
+if [[ -n "${DEFORMABLE_ALIGNMENT_DIRECTION:-}" ]]; then
+    COMMON_ARGS+=(--deformable_alignment_direction "${DEFORMABLE_ALIGNMENT_DIRECTION}")
+fi
 if [[ "${OVERWRITE}" == "1" ]]; then COMMON_ARGS+=(--overwrite); fi
 
 mkdir -p "${OUTPUT_DIR}/terminal_logs"

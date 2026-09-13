@@ -31,6 +31,14 @@ preflight_only = os.environ.get("PREFLIGHT_ONLY", "0").lower() in {
     "1", "true", "yes", "on"
 }
 sequences = load_sequences(long_test_root, output_root, selected_names)
+max_images = int(os.environ.get("MAX_IMAGES", "0"))
+if max_images < 0:
+    raise ValueError("MAX_IMAGES must be nonnegative")
+if max_images:
+    from dataclasses import replace
+    sequences = [replace(seq, image_paths=seq.image_paths[:max_images],
+                         mask_paths=seq.mask_paths[:max_images],
+                         frame_ids=seq.frame_ids[:max_images]) for seq in sequences]
 print_preflight(sequences)
 if preflight_only:
     raise SystemExit(0)
@@ -155,8 +163,8 @@ if temporal_every_n_steps <= 0:
     raise ValueError("TEMPORAL_EVERY_N_STEPS must be positive.")
 if flow_batch_size <= 0:
     raise ValueError("TEMPORAL_FLOW_BATCH_SIZE must be positive.")
-if temporal_flow_backend not in {"torchvision", "v7_student"}:
-    raise ValueError("TEMPORAL_FLOW_BACKEND must be 'torchvision' or 'v7_student'.")
+if temporal_flow_backend not in {"torchvision", "v7_student", "teacher_cache"}:
+    raise ValueError("TEMPORAL_FLOW_BACKEND must be 'torchvision', 'v7_student', or 'teacher_cache'.")
 if temporal_mode_enabled and temporal_flow_backend == "v7_student" and not v7_raft_student_path:
     raise ValueError(
         "TEMPORAL_FLOW_BACKEND=v7_student requires V7_RAFT_STUDENT_PATH."
@@ -237,8 +245,16 @@ ip_model = FusionIPAdapter(
 flow_model = None
 flow_transform = None
 v7_flow_provider = None
+teacher_flow_cache = None
 if not temporal_mode_enabled:
     print("[Temporal flow] disabled because GUIDANCE_MODE=cge")
+elif temporal_flow_backend == "teacher_cache":
+    from STC_encoder_v8_raft_deformable.oracle_teacher_flow import OracleTeacherFlowCache
+    teacher_flow_cache = OracleTeacherFlowCache(
+        os.environ["TEACHER_FLOW_ROOT"], os.environ["TEACHER_FLOW_SPLIT"], 512)
+    teacher_flow_cache.validate_clips([
+        (f"{seq.spec.class_name}/{seq.spec.source_name}", None, seq.frame_ids)
+        for seq in sequences])
 elif temporal_flow_backend == "torchvision":
     flow_weights = Raft_Large_Weights.DEFAULT
     flow_transform = flow_weights.transforms()
@@ -412,7 +428,7 @@ def forward_backward_visibility(
 
 
 @torch.no_grad()
-def prepare_temporal_conditions(flow_frames, roi_masks):
+def prepare_temporal_conditions(flow_frames, roi_masks, *, video=None, frame_ids=None):
     """Create the fixed backward-flow condition for one denoising clip.
 
     ``pair_intersection`` is deliberately the light temporal-mask variant:
@@ -420,7 +436,11 @@ def prepare_temporal_conditions(flow_frames, roi_masks):
     be in bounds.  Unlike ``full_stable``, it does not require forward flow or
     a forward-backward visibility/cycle-consistency test.
     """
-    flow_forward, flow_backward = estimate_bidirectional_flow(flow_frames)
+    if teacher_flow_cache is not None:
+        prediction = teacher_flow_cache.sequence(video, torch.tensor(frame_ids), device)
+        flow_forward, flow_backward = prediction.forward[0], prediction.backward[0]
+    else:
+        flow_forward, flow_backward = estimate_bidirectional_flow(flow_frames)
 
     bg_masks = (1.0 - roi_masks).to(device=device, dtype=torch.float32)
     if temporal_bg_mask_mode == "pair_intersection":
@@ -507,6 +527,10 @@ def run_sequence(sequence):
         "frame_count": len(sequence.frame_ids),
         "frame_range": [sequence.frame_ids[0], sequence.frame_ids[-1]],
         "temporal_clip_size": clip_size,
+        "temporal_window": [temporal_start_step, temporal_end_step],
+        "temporal_guidance_scale": temporal_guidance_scale,
+        "teacher_flow_root": os.environ.get("TEACHER_FLOW_ROOT") if teacher_flow_cache else None,
+        "teacher_flow_split": os.environ.get("TEACHER_FLOW_SPLIT") if teacher_flow_cache else None,
         "temporal_flow_backend": temporal_flow_backend,
         "v7_raft_student_path": (
             v7_raft_student_path
@@ -589,7 +613,10 @@ def run_sequence(sequence):
             pipe.scheduler.cge_codec_eval_count = 0
             pipe.scheduler.cge_denoise_step_count = 0
         if temporal_enabled:
-            flow_backward, stable_bg, bg_masks = prepare_temporal_conditions(flow_frames, roi_masks)
+            flow_backward, stable_bg, bg_masks = prepare_temporal_conditions(
+                flow_frames, roi_masks,
+                video=f"{sequence.spec.class_name}/{sequence.spec.source_name}",
+                frame_ids=[sequence.frame_ids[idx] for idx, _ in clip])
             if cge_enabled:
                 pipe.scheduler.set_temporal_guidance(
                     flow_backward=flow_backward,

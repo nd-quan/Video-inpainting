@@ -88,6 +88,8 @@ def _add_variant_arguments(parser) -> None:
         help="Full V8 component/checkpoint for Stage-B joint fine-tuning.",
     )
     parser.add_argument("--training_stage", choices=("deform_only", "joint"), default="deform_only")
+    parser.add_argument("--deformable_alignment_direction", choices=("bidirectional", "previous_only", "next_only"), default=None,
+                        help="DCN fusion/loss direction; omitted inherits the initialization checkpoint.")
     parser.add_argument("--relative_position_max_distance", type=int, default=32)
     parser.add_argument("--cross_clip_memory_frames", type=int, default=4)
     parser.add_argument("--detach_cross_clip_memory", action="store_true", default=True)
@@ -153,6 +155,9 @@ def _model_factory(args):
         source = resolve_complete_component(args.init_v8_model, "stc_v8_model")
         model = RAFTGuidedDeformableBGSTCAdapter.from_pretrained(str(source))
     _model_config_matches(model, args)
+    if args.deformable_alignment_direction is None:
+        args.deformable_alignment_direction = model.config.deformable_alignment_direction
+    model.register_to_config(deformable_alignment_direction=args.deformable_alignment_direction)
     return model
 
 
@@ -235,6 +240,13 @@ def _build_v8_extra_train_loss(*, stc_output, batch, bg_mask_sequence, args, glo
     )
     deform_weight = float(args.deform_alignment_loss_weight) * ramp
     offset_weight = float(args.deform_offset_loss_weight)
+    # Keep the active direction at full weight, rather than halving its loss.
+    if args.deformable_alignment_direction == "previous_only":
+        output.loss = output.loss_backward
+        output.loss_offset = output.loss_offset_backward
+    elif args.deformable_alignment_direction == "next_only":
+        output.loss = output.loss_forward
+        output.loss_offset = output.loss_offset_forward
     weighted_deform = deform_weight * output.loss
     weighted_offset = offset_weight * output.loss_offset
     total = weighted_deform + weighted_offset
@@ -288,6 +300,7 @@ def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index
     metadata.update({
         "experiment": EXPERIMENT_NAME,
         "model_variant": "v8_frozen_v7_raft_guided_modulated_deformable_alignment",
+        "deformable_alignment_direction": args.deformable_alignment_direction,
         "loss": "L_diff + lambda_feature*L_feature(diagnostic when frozen) + lambda_deform*L_deform + lambda_offset*L_offset",
         "inference_component": "stc_v8_model",
         "initialization_component": _resolved_initialization(args),
@@ -327,7 +340,7 @@ def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index
         "deform_alignment_charbonnier_eps": args.deform_alignment_charbonnier_eps,
         "deform_alignment_warmup_steps": args.deform_alignment_warmup_steps,
         "deform_offset_loss_weight": args.deform_offset_loss_weight,
-        "deformation_scope": "first_order_bidirectional_raw_adjacent_features",
+        "deformation_scope": "first_order_" + args.deformable_alignment_direction + "_raw_adjacent_features",
         "deformation_region": "BG_to_BG_reliable_support",
         "cross_clip_memory_deformed": False,
         "teacher_flow_required_at_inference": False,
@@ -339,6 +352,9 @@ def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index
 
 def _resume_contract(args):
     contract = _base_resume_contract(args)
+    # Historical bidirectional checkpoints lack this key; preserve their resume contract.
+    if args.deformable_alignment_direction not in (None, "bidirectional"):
+        contract["deformable_alignment_direction"] = args.deformable_alignment_direction
     contract.update({
         "experiment": EXPERIMENT_NAME,
         "initialization_component": _resolved_initialization(args),
@@ -428,6 +444,19 @@ def parse_args(input_args=None):
             raise ValueError("deform_only requires --init_v5_model and forbids --init_v8_model")
     elif not args.init_v8_model or args.init_v5_model:
         raise ValueError("joint requires --init_v8_model and forbids --init_v5_model")
+    resume_path = trainer.resolve_resume_checkpoint(args)
+    component = (resume_path / "stc_v8_model") if resume_path else (
+        resolve_complete_component(args.init_v8_model, "stc_v8_model") if args.init_v8_model else None
+    )
+    saved_direction = "bidirectional"
+    if component is not None:
+        saved_direction = RAFTGuidedDeformableBGSTCAdapter.load_config(str(component)).get(
+            "deformable_alignment_direction", "bidirectional"
+        )
+    if args.deformable_alignment_direction is None:
+        args.deformable_alignment_direction = saved_direction
+    if resume_path and args.deformable_alignment_direction != saved_direction:
+        raise ValueError("Changing DCN direction requires --init_v8_model and a new output directory, not exact resume")
     if args.relative_position_max_distance < args.clip_length - 1:
         raise ValueError("relative_position_max_distance must cover T-1")
     overlap = args.clip_length - args.clip_stride
@@ -486,6 +515,7 @@ def run_preflight(args) -> None:
     trainable = [name for name, parameter in model.named_parameters() if parameter.requires_grad]
     report = {
         "v8_preflight": "ok",
+        "deformable_alignment_direction": args.deformable_alignment_direction,
         "training_stage": args.training_stage,
         "initialization_component": _resolved_initialization(args),
         "v7_raft_student_component": args.raft_student_path,

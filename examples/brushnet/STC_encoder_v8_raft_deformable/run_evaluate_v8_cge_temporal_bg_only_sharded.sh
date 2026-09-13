@@ -109,6 +109,9 @@ COMMON_ARGS=(
     --cge_every_n_steps "${CGE_EVERY_N_STEPS}" --cge_max_evals "${CGE_MAX_EVALS}"
     --cge_decode_chunk_size "${CGE_DECODE_CHUNK_SIZE}"
 )
+if [[ -n "${DEFORMABLE_ALIGNMENT_DIRECTION:-}" ]]; then
+    COMMON_ARGS+=(--deformable_alignment_direction "${DEFORMABLE_ALIGNMENT_DIRECTION}")
+fi
 if [[ "${OVERWRITE}" == "1" ]]; then
     COMMON_ARGS+=(--overwrite)
 fi

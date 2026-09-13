@@ -122,6 +122,9 @@ COMMON_ARGS=(
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" --dataloader_pin_memory --mixed_precision "${MIXED_PRECISION}"
     --seed "${SEED}" --report_to tensorboard --tracker_project_name "train_stc_v8_${TRAINING_STAGE}"
 )
+if [[ -n "${DEFORMABLE_ALIGNMENT_DIRECTION:-}" ]]; then
+    COMMON_ARGS+=(--deformable_alignment_direction "${DEFORMABLE_ALIGNMENT_DIRECTION}")
+fi
 if [[ "${RAFT_MIXED_PRECISION}" != "1" ]]; then COMMON_ARGS+=(--raft_no_mixed_precision); fi
 if [[ "${TRAINING_STAGE}" == "deform_only" ]]; then
     [[ -e "${INIT_V5_MODEL}" ]] || { echo "Missing INIT_V5_MODEL=${INIT_V5_MODEL}" >&2; exit 1; }

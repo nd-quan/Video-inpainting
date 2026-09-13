@@ -43,6 +43,9 @@ COMMON_ARGS=(
     --shared_bg_noise_strength "${SHARED_BG_NOISE_STRENGTH}" --roi_composite "${ROI_COMPOSITE}" --roi_blur_kernel_size "${ROI_BLUR_KERNEL_SIZE}"
     --seed "${SEED}" --shared_bg_seed "${SHARED_BG_SEED}" --device cuda --save_references
 )
+if [[ -n "${DEFORMABLE_ALIGNMENT_DIRECTION:-}" ]]; then
+    COMMON_ARGS+=(--deformable_alignment_direction "${DEFORMABLE_ALIGNMENT_DIRECTION}")
+fi
 if [[ "${OVERWRITE}" == "1" ]]; then COMMON_ARGS+=(--overwrite); fi
 mkdir -p "${OUTPUT_DIR}/terminal_logs"
 timestamp="$(date +%Y%m%d_%H%M%S)"; terminal_log="${OUTPUT_DIR}/terminal_logs/evaluate_combined_${timestamp}.log"

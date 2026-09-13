@@ -32,10 +32,17 @@ from STC_encoder_v8_raft_deformable.raft_guided_deformable_stc_adapter import (
 _base_v5_preflight = v5_evaluator.preflight
 _PROVIDER_BY_DEVICE: Dict[str, FrozenV7RAFTFlowProvider] = {}
 _ACTIVE_EVAL_ARGS = None
+_ORACLE_CACHE = None
 
 
 def _add_evaluation_arguments(parser) -> None:
+    parser.add_argument("--condition_flow_source", choices=("student", "teacher"), default="student")
+    parser.add_argument("--teacher_flow_root", default=None)
+    parser.add_argument("--teacher_flow_split", default="test")
+    parser.add_argument("--oracle_available_clips_only", action="store_true")
     parser.add_argument("--deformable_alignment_scale", type=float, default=1.0)
+    parser.add_argument("--deformable_alignment_direction", choices=("bidirectional", "previous_only", "next_only"), default=None,
+                        help="Override checkpoint DCN direction for ablation; default inherits checkpoint.")
     parser.add_argument("--raft_student_path", required=True)
     parser.add_argument("--raft_pair_batch_size", type=int, default=1)
     parser.add_argument(
@@ -67,7 +74,7 @@ def _provider(args, device: torch.device) -> FrozenV7RAFTFlowProvider:
 
 
 def preflight(args):
-    global _ACTIVE_EVAL_ARGS
+    global _ACTIVE_EVAL_ARGS, _ORACLE_CACHE
     if args.deformable_alignment_scale < 0.0:
         raise ValueError("deformable_alignment_scale must be non-negative")
     if args.raft_pair_batch_size < 1:
@@ -76,15 +83,54 @@ def preflight(args):
     _ACTIVE_EVAL_ARGS = args
     v5_evaluator.RelativeCrossClipBGSTCAdapter = RAFTGuidedDeformableBGSTCAdapter
     dataset, paths = _base_v5_preflight(args)
+    _ORACLE_CACHE = None
+    if args.condition_flow_source == "teacher":
+        from STC_encoder_v8_raft_deformable.oracle_teacher_flow import OracleTeacherFlowCache
+        if not args.teacher_flow_root:
+            raise ValueError("--teacher_flow_root is required for oracle evaluation")
+        _ORACLE_CACHE = OracleTeacherFlowCache(args.teacher_flow_root, args.teacher_flow_split, args.resolution)
+        if args.oracle_available_clips_only:
+            from STC_encoder_v5_relative_crossclip.cross_clip_data import build_predecessor_index
+            original = list(dataset.clips)
+            predecessors, _ = build_predecessor_index(original)
+            keep = set()
+            for i, clip in enumerate(original):
+                try:
+                    _ORACLE_CACHE.validate_clips([clip])
+                except FileNotFoundError:
+                    continue
+                keep.add(i)
+            # Preserve original predecessor chains, not a new predecessor after filtering.
+            while True:
+                filtered = {i for i in keep if predecessors[i] is None or predecessors[i] in keep}
+                if filtered == keep:
+                    break
+                keep = filtered
+            if not keep:
+                raise ValueError("No oracle clips with complete original predecessor chains")
+            dataset.clips = [clip for i, clip in enumerate(original) if i in keep]
+            dataset.rebuild_predecessors()
+            dataset.covered_frame_count = len({p for _, paths, _ in dataset.clips for p in paths})
+            dataset.branch_count = len({v for v, _, _ in dataset.clips})
+            selection = {"original_clip_count": len(original), "selected_clip_count": len(keep),
+                         "original_predecessors_preserved": True,
+                         "clips": [{"video": v, "frame_ids": list(map(int, ids))} for v, _, ids in dataset.clips]}
+            Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+            (Path(args.output_dir) / "oracle_selection.json").write_text(json.dumps(selection, indent=2))
+        print(json.dumps({"oracle_cached_pair_count": _ORACLE_CACHE.validate_clips(dataset.clips)}))
     adapter = RAFTGuidedDeformableBGSTCAdapter.from_pretrained(str(args.stc_adapter_path))
+    if args.deformable_alignment_direction is None:
+        args.deformable_alignment_direction = adapter.config.deformable_alignment_direction
     report = {
         "v8_preflight": "ok",
+        "deformable_alignment_direction": args.deformable_alignment_direction,
         "v7_raft_student_component": args.raft_student_path,
         "v7_raft_frozen": True,
-        "v7_flow_input": "degraded RGB only; clean GT/teacher flow are never read at inference",
+        "v7_flow_input": "cached clean teacher (oracle)" if _ORACLE_CACHE else "degraded RGB",
         "v7_flow_units": "RGB [dx,dy] pixels -> resize_flow_sequence -> STC feature pixels",
         "legacy_v5_base_stream": "preserved",
-        "deform_offset_prior": "V7 RAFT student",
+        "deform_offset_prior": args.condition_flow_source,
+        "condition_flow_source": args.condition_flow_source,
         "deformable_alignment_scale": float(args.deformable_alignment_scale),
         "deform_kernel_size": int(adapter.config.deform_kernel_size),
         "deform_groups": int(adapter.config.deform_groups),
@@ -106,6 +152,7 @@ def build_v8_condition(
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     if _ACTIVE_EVAL_ARGS is None:
         raise RuntimeError("V8 evaluator provider was not initialized by preflight")
+    adapter.register_to_config(deformable_alignment_direction=_ACTIVE_EVAL_ARGS.deformable_alignment_direction)
     rgb = sample["conditioning_pixel_values"].unsqueeze(0).to(device=device, dtype=torch.float32)
     bg = sample["masks"].unsqueeze(0).to(device=device, dtype=torch.float32)
     previous_rgb = sample["previous_conditioning_pixel_values"].unsqueeze(0).to(device=device, dtype=torch.float32)
@@ -115,7 +162,14 @@ def build_v8_condition(
     previous_valid = sample["previous_valid_mask"].unsqueeze(0).to(device=device)
     frames = int(rgb.shape[1])
     generator = torch.Generator(device=device).manual_seed(int(condition_seed))
-    provider = _provider(_ACTIVE_EVAL_ARGS, device)
+    external = {}
+    if _ORACLE_CACHE is not None:
+        provider = None
+        external["external_current_flow"] = _ORACLE_CACHE.sequence(sample["video"], sample["frame_ids"], device)
+        if bool(previous_valid.any()):
+            external["external_previous_flow"] = _ORACLE_CACHE.sequence(sample["video"], sample["previous_frame_ids"], device)
+    else:
+        provider = _provider(_ACTIVE_EVAL_ARGS, device)
     with evaluator.autocast_context(device):
         base_condition_latents = pipe.vae.encode(
             rgb.flatten(0, 1).to(dtype=pipe.vae.dtype)
@@ -127,6 +181,7 @@ def build_v8_condition(
             rgb_sequence=rgb,
             bg_mask_sequence=bg,
             raft_flow_provider=provider,
+            **external,
             injection_scale=float(injection_scale),
             predict_flow=True,
             frame_ids=frame_ids,

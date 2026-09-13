@@ -559,6 +559,18 @@ class FlowGuidedDeformableBGSTCAdapter(RelativeCrossClipBGSTCAdapter):
         following_full[:, :-1] = deformed_next
         previous_reliability[:, 1:] = reliability_backward
         following_reliability[:, :-1] = reliability_forward
+        # V8 checkpoints can select a DCN direction. Legacy V6 stays bidirectional.
+        direction = getattr(self.config, "deformable_alignment_direction", "bidirectional")
+        if direction == "previous_only":
+            following_full = base_aligned.clone()
+            following_reliability = torch.zeros_like(following_reliability)
+            reliability_forward = torch.zeros_like(reliability_forward)
+        elif direction == "next_only":
+            previous_full = base_aligned.clone()
+            previous_reliability = torch.zeros_like(previous_reliability)
+            reliability_backward = torch.zeros_like(reliability_backward)
+        elif direction != "bidirectional":
+            raise ValueError(f"Invalid deformable_alignment_direction: {direction}")
         fused = self.deformable_fusion(
             base_aligned.flatten(0, 1),
             previous_full.flatten(0, 1),

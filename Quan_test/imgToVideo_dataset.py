@@ -27,6 +27,11 @@ DEFAULT_DATASET_ROOT = Path(
     "/home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/test_2"
 )
 SEQUENCE_FPS = {
+    "BasketballPass": 50,
+    "ParkScene": 24,
+    "PartyScene": 50,
+    "RaceHorses": 30,
+    "Traffic": 30,
     "Cactus": 50,
     "BQMall": 60,
     "BQSquare": 60,

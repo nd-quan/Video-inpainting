@@ -79,7 +79,10 @@ class RAFTGuidedDeformableBGSTCAdapter(FlowGuidedDeformableBGSTCAdapter):
         deform_groups: int = 4,
         deform_residual_max_displacement: float = 2.0,
         detach_deform_reliability: bool = True,
+        deformable_alignment_direction: str = "bidirectional",
     ):
+        if deformable_alignment_direction not in ("bidirectional", "previous_only", "next_only"):
+            raise ValueError("Invalid deformable_alignment_direction")
         super().__init__(
             hidden_channels=hidden_channels,
             num_heads=num_heads,
@@ -489,6 +492,8 @@ def augment_brushnet_condition_v8(
     previous_frame_ids: Optional[torch.Tensor] = None,
     previous_valid_mask: Optional[torch.Tensor] = None,
     deformable_alignment_scale: float = 1.0,
+    external_current_flow=None,
+    external_previous_flow=None,
 ):
     """Build V8's condition with V7 flow for both current and predecessor clips."""
     if base_condition_latents.ndim != 4 or base_condition_latents.shape[1] != 4:
@@ -496,7 +501,11 @@ def augment_brushnet_condition_v8(
     batch, frames = rgb_sequence.shape[:2]
     if base_condition_latents.shape[0] != batch * frames:
         raise ValueError("base_condition_latents batch must equal B*T")
-    current_flow = raft_flow_provider.predict_sequence(rgb_sequence)
+    current_flow = external_current_flow
+    if current_flow is None:
+        if raft_flow_provider is None:
+            raise ValueError("An external current flow or RAFT provider is required")
+        current_flow = raft_flow_provider.predict_sequence(rgb_sequence)
     temporal_memory = None
     if previous_rgb_sequence is not None:
         if previous_bg_mask_sequence is None or previous_frame_ids is None:
@@ -504,7 +513,11 @@ def augment_brushnet_condition_v8(
         if previous_valid_mask is None:
             previous_valid_mask = torch.ones_like(previous_frame_ids, dtype=torch.bool)
         if bool(previous_valid_mask.any()):
-            previous_flow = raft_flow_provider.predict_sequence(previous_rgb_sequence)
+            previous_flow = external_previous_flow
+            if previous_flow is None:
+                if raft_flow_provider is None:
+                    raise ValueError("An external predecessor flow is required")
+                previous_flow = raft_flow_provider.predict_sequence(previous_rgb_sequence)
             bare_model = model.module if hasattr(model, "module") else model
             with torch.no_grad():
                 previous_output = bare_model(
