@@ -5,7 +5,7 @@ import torch
 import visualize_v5_v6_v8_feature_alignment as vis
 
 
-def render_detail(case, tile_size):
+def render_detail(case, tile_size, tile_gap=0):
     keys = ('source', 'base_candidate', 'candidate', 'target')
     titles = ('Before', 'Student warp', 'Student + DCN', 'Target')
     support = case['metric_support'].bool()
@@ -21,7 +21,7 @@ def render_detail(case, tile_size):
         for key, title in zip(keys, titles):
             value = (case[key][channel:channel+1] - low) / max(high-low, 1e-8)
             tiles.append((f'Ch{channel} {title}', vis.scalar_to_bgr(value, 1)))
-    channel_image = vis.montage(tiles, tile_size, columns=4)
+    channel_image = vis.montage(tiles, tile_size, columns=4, gap=tile_gap)
     errors = [vis.cosine_distance(case[k], case['target']) for k in keys[:3]]
     def scale(values, mask=None):
         selected = [v[mask] if mask is not None else v.flatten() for v in values]
@@ -57,7 +57,7 @@ def render_detail(case, tile_size):
                     cosine_error_p99=error_scale, cosine_gain_abs_p99=gain_scale,
                     feature_change_p99=change_scale, support_pixels=int(support.sum()),
                     policy='Scales shared within each row/group and pair. Channel selection uses source/target spatial variance only. Percentile clipping enhances contrast; scales differ between pairs. Gray excludes unsupported pixels. Change maps are full-field and show magnitude, not quality. Positive cosine gain is blue; negative is red.')
-    return channel_image, vis.montage(tiles, tile_size, columns=4), metadata
+    return channel_image, vis.montage(tiles, tile_size, columns=4, gap=tile_gap), metadata
 
 
 def diverging(value, maximum):

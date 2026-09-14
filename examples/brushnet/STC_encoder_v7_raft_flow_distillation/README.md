@@ -54,6 +54,30 @@ All RAFT iterations are supervised with normalized geometric weights
 `gamma=0.8`, retaining the configured overall teacher-loss scale.  Set
 `FINAL_FLOW_ONLY=1` only for the final-flow ablation.
 
+## SEA-RAFT student
+
+`run_train_sea_raft_student_flow.sh` is a separate entry point for the
+matched SEA-RAFT setup: a frozen clean SEA-RAFT cache supervises a trainable
+SEA-RAFT-M student on degraded RGB.  It does not use ProPainter or
+`raft-things.pth`.  The official SEA-RAFT-M checkpoint is accepted directly
+as `model.safetensors`.
+
+```bash
+cd /home/cilab/ndquan/videoInpainting/code/BrushNet
+
+CUDA_VISIBLE_DEVICES=1,2 \
+NUM_PROCESSES=2 \
+SEA_RAFT_CHECKPOINT=/home/cilab/ndquan/videoInpainting/pretrained/SEA-RAFT/models/model.safetensors \
+TEACHER_FLOW_ROOT=/home/cilab/ndquan/videoInpainting/SFU_STC_flow/teacher_flows_sea_raft_512x512 \
+OUTPUT_DIR=/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/train_v7_sea_raft_student_flow_512 \
+bash examples/brushnet/STC_encoder_v7_raft_flow_distillation/run_train_sea_raft_student_flow.sh
+```
+
+SEA-RAFT-M is pretrained with four refinement iterations, so this runner
+defaults to `RAFT_ITERATIONS=4` and produces five iteratively supervised
+predictions (the initial estimate plus four updates).  It can be resumed only
+from another SEA-RAFT-student experiment with the same cache/model contract.
+
 ## Outputs and selection
 
 Each checkpoint contains:

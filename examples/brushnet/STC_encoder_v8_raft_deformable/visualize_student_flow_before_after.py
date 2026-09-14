@@ -13,7 +13,7 @@ import visualize_v5_v6_v8_feature_alignment as vis
 from feature_alignment_detail import render_detail
 
 
-def render(sample, pair, case, tile_size):
+def render(sample, pair, case, tile_size, tile_gap=0):
     keys = ('source', 'base_candidate', 'candidate', 'target',
             'aligned_target', 'temporal_target')
     pca = dict(zip(keys, vis.pca_feature_bgr_maps([case[k] for k in keys])))
@@ -42,14 +42,14 @@ def render(sample, pair, case, tile_size):
         ('After temporal encoder PCA', pca['temporal_target']),
         ('Target restore mask', vis.mask_to_bgr(sample['masks'][pair+1])),
     ])
-    return vis.montage(tiles, tile_size, columns=4), errors
+    return vis.montage(tiles, tile_size, columns=4, gap=tile_gap), errors
 
 
 def main():
     args = vis.parse_args()
     if args.resolution < 8 or args.resolution % 8 or args.clip_length < 2 or args.clip_stride < 1:
         raise ValueError('Invalid resolution or clip geometry')
-    if args.tile_size < 64 or args.raft_pair_batch_size < 1 or args.deformable_alignment_scale < 0:
+    if args.tile_size < 64 or args.tile_gap < 0 or args.raft_pair_batch_size < 1 or args.deformable_alignment_scale < 0:
         raise ValueError('Invalid tile size, RAFT batch size or alignment scale')
     torch.set_num_threads(4)
     device = torch.device(args.device)
@@ -93,12 +93,14 @@ def main():
             # Same pixels for all three comparisons, also requiring unwarped
             # source BG. Invalid warp fallback pixels never count as successes.
             case['metric_support'] = case['support'] * (masks[p] >= .5).float() * case['base_valid']
-            canvas, errors = render(sample, p, case, args.tile_size)
+            canvas, errors = render(sample, p, case, args.tile_size, args.tile_gap)
             name = f'{vis.sanitize(item.selected.sequence)}_f{item.selected.frame_t:06d}_{item.selected.frame_t1:06d}.png'
             path = root / 'montages' / name
             if not cv2.imwrite(str(path), canvas):
                 raise OSError(path)
-            channel_image, diagnostic_image, display_scales = render_detail(case, args.tile_size)
+            channel_image, diagnostic_image, display_scales = render_detail(
+                case, args.tile_size, args.tile_gap
+            )
             for subdir, image in [('channels', channel_image), ('diagnostics', diagnostic_image)]:
                 if not cv2.imwrite(str(root / subdir / name), image):
                     raise OSError(root / subdir / name)
@@ -121,7 +123,7 @@ def main():
         'cosine errors and scale; target before fusion/after alignment fusion/after temporal encoding/mask.\n\n'
         'PCA colors share one basis per pair. Errors compare all candidates to the same target on identical valid BG pixels. '
         'Lower error is better correspondence, not proof of improved restored RGB. White masks identify restore regions.\n\n'
-        'Additional views: channels/ shows four channels selected by source/target spatial variance with shared 1st-99th percentile scaling per row. diagnostics/ shows shared p99-scaled cosine errors, signed improvement (blue=better, red=worse, gray=excluded), and absolute feature changes across intermediate stages. Changes are not quality scores. display_scales/ records all ranges. Scales differ between pairs.\n\n'
+        f'Adjacent tiles use a {args.tile_gap}-pixel dark-gray gap. Additional views: channels/ shows four channels selected by source/target spatial variance with shared 1st-99th percentile scaling per row. diagnostics/ shows shared p99-scaled cosine errors, signed improvement (blue=better, red=worse, gray=excluded), and absolute feature changes across intermediate stages. Changes are not quality scores. display_scales/ records all ranges. Scales differ between pairs.\n\n'
         'Checkpoint and arguments: run_config.json. Pair measurements: per_pair_metrics.csv. Means: summary.json.\n')
     print(json.dumps(summary, indent=2), flush=True)
 

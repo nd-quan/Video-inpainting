@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""Compare fine-tuned RAFT-student flow on consecutive input/output pairs.
+"""Compare a fine-tuned V7 flow student on consecutive input/output pairs.
 
-RAFT is evaluated separately on ``input_t -> input_t1`` and
-``output_t -> output_t1``.  The visualization compares temporal flow and frame
-similarity before and after motion compensation for the two domains.
+The saved student can be either the original ProPainter RAFT or SEA-RAFT.
+It is evaluated separately on ``input_t -> input_t1`` and ``output_t ->
+output_t1``.  The visualization compares temporal flow and frame similarity
+before and after motion compensation for the two domains.
 """
 
 from __future__ import annotations
@@ -22,13 +23,17 @@ import torch.nn.functional as F
 
 THIS_DIR = Path(__file__).resolve().parent
 BRUSHNET_DIR = THIS_DIR.parent
+V7_DIR = BRUSHNET_DIR / "STC_encoder_v7_raft_flow_distillation"
 if str(BRUSHNET_DIR) not in sys.path:
     sys.path.insert(0, str(BRUSHNET_DIR))
+if str(V7_DIR) not in sys.path:
+    sys.path.insert(0, str(V7_DIR))
 
 from STC_encoder_v8_raft_deformable.raft_flow_provider import (  # noqa: E402
     FrozenV7RAFTFlowProvider,
     resolve_raft_student_component,
 )
+from sea_raft_student import SEAStudentFlowPredictor  # noqa: E402
 
 
 DEFAULT_ROOT = Path("/home/cilab/ndquan/videoInpainting/code/BrushNet")
@@ -50,7 +55,12 @@ def parse_args() -> argparse.Namespace:
                         help="ROI mask at t+1; white means inpainting ROI.")
     parser.add_argument("--region", choices=("full", "bg", "roi"), default="full",
                         help="Region used for warping diagnostics and metrics.")
-    parser.add_argument("--raft_student_path", type=Path, default=DEFAULT_STUDENT)
+    parser.add_argument(
+        "--raft_student_path",
+        type=Path,
+        default=DEFAULT_STUDENT,
+        help="V7 run pointer, checkpoint, or raft_student folder; supports ProPainter RAFT and SEA-RAFT.",
+    )
     parser.add_argument("--save_dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no_amp", action="store_true")
@@ -229,23 +239,50 @@ def main() -> None:
         raise RuntimeError("The fine-tuned RAFT provider requires CUDA")
     if device.index is None:
         device = torch.device("cuda", torch.cuda.current_device())
-    provider = FrozenV7RAFTFlowProvider(
-        resolve_raft_student_component(args.raft_student_path), device=device,
-        pair_batch_size=1, mixed_precision=not args.no_amp,
-    )
+    student_path = resolve_raft_student_component(args.raft_student_path)
+    student_config = json.loads((student_path / "config.json").read_text(encoding="utf-8"))
+    architecture = student_config.get("architecture", "propainter_raft_large")
+    sea_student = None
+    if architecture == "sea_raft":
+        sea_student = SEAStudentFlowPredictor.from_pretrained(student_path, map_location="cpu")
+        sea_student = sea_student.to(device=device, dtype=torch.float32).eval()
+        sea_student.requires_grad_(False)
+        student_metadata = {
+            "raft_student_component": str(student_path),
+            "raft_architecture": architecture,
+            "raft_iterations": int(student_config["iterations"]),
+            "raft_input_normalization": student_config.get("input_normalization"),
+            "flow_convention": student_config.get("flow_convention"),
+            "pair_batch_size": 1,
+            "frozen": True,
+        }
+        provider = None
+    else:
+        provider = FrozenV7RAFTFlowProvider(
+            student_path, device=device, pair_batch_size=1, mixed_precision=not args.no_amp,
+        )
+        student_metadata = provider.metadata()
     sequences = []
     for frame_t, frame_t1 in ((input_t, input_t1), (output_t, output_t1)):
         first, second = pad_pair(to_raft(frame_t, device), to_raft(frame_t1, device))
         sequences.append(torch.stack((first[0], second[0]), dim=0))
     sequence = torch.stack(sequences, dim=0)
     with torch.inference_mode():
-        prediction = provider.predict_sequence(sequence)
+        if sea_student is not None:
+            forward, backward = sea_student.predict_bidirectional(
+                sequence[:, 0], sequence[:, 1], return_all=False, pair_batch_size=1
+            )
+            # Match the V7 provider's [B, adjacent-pair, 2, H, W] contract.
+            prediction_forward, prediction_backward = forward.unsqueeze(1), backward.unsqueeze(1)
+        else:
+            prediction = provider.predict_sequence(sequence)
+            prediction_forward, prediction_backward = prediction.forward, prediction.backward
     height, width = input_t.shape[:2]
     flows = []
     for batch_index in range(2):
         flows.append(tuple(
             value[batch_index, 0, :, :height, :width].permute(1, 2, 0).cpu().numpy()
-            for value in (prediction.forward, prediction.backward)
+            for value in (prediction_forward, prediction_backward)
         ))
     (input_forward, input_backward), (output_forward, output_backward) = flows
     backward_support = region_support(roi_t, roi_t1, input_backward, args.region)
@@ -373,12 +410,12 @@ def main() -> None:
         "images": {name: str(path.expanduser().resolve()) for name, path in zip(
             ("input_t", "input_t1", "output_t", "output_t1"), paths
         )},
-        "interpretation": "RAFT temporal flow is estimated separately for the consecutive input and output pairs.",
+        "interpretation": "V7 student temporal flow is estimated separately for the consecutive input and output pairs.",
         "evaluation_region": args.region,
         "mask_semantics": "White mask pixels are ROI; BG is the inverse.",
         "mask_t": str(args.mask_t.expanduser().resolve()) if args.mask_t else None,
         "mask_t1": str(args.mask_t1.expanduser().resolve()) if args.mask_t1 else None,
-        "raft_student": provider.metadata(),
+        "raft_student": student_metadata,
         "height": height, "width": width,
         "input_pair": pair_metrics(
             input_result, input_forward, input_backward, forward_support

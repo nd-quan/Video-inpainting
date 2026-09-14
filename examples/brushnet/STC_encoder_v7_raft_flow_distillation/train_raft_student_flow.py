@@ -47,6 +47,7 @@ from diffusers.models.stc_flow_training import (  # noqa: E402
 )
 from diffusers.optimization import get_scheduler  # noqa: E402
 from raft_student import RAFTStudentFlowPredictor  # noqa: E402
+from sea_raft_student import SEAStudentFlowPredictor  # noqa: E402
 from raft_teacher_pair_data import (  # noqa: E402
     RAFTTeacherFlowPairDataset,
     evenly_limit_pairs_per_sequence,
@@ -54,15 +55,25 @@ from raft_teacher_pair_data import (  # noqa: E402
 
 
 DEFAULT_PROPAINTER = Path("/home/cilab/ndquan/videoInpainting/pretrained/ProPainter")
+DEFAULT_SEA_RAFT = Path("/home/cilab/ndquan/videoInpainting/pretrained/SEA-RAFT")
+DEFAULT_SEA_RAFT_CFG = DEFAULT_SEA_RAFT / "config/eval/spring-M.json"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(default_student_backend: str = "propainter_raft") -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset_root", type=Path, required=True)
     parser.add_argument("--teacher_flow_root", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument(
+        "--student_backend",
+        choices=("propainter_raft", "sea_raft"),
+        default=default_student_backend,
+    )
     parser.add_argument("--propainter_root", type=Path, default=DEFAULT_PROPAINTER)
-    parser.add_argument("--raft_checkpoint", type=Path, required=True)
+    parser.add_argument("--raft_checkpoint", type=Path)
+    parser.add_argument("--sea_raft_root", type=Path, default=DEFAULT_SEA_RAFT)
+    parser.add_argument("--sea_raft_cfg", type=Path, default=DEFAULT_SEA_RAFT_CFG)
+    parser.add_argument("--sea_raft_checkpoint", type=Path)
     parser.add_argument("--train_split", choices=("train", "valid", "test"), default="train")
     parser.add_argument("--valid_split", choices=("train", "valid", "test"), default="valid")
     parser.add_argument("--resolution", type=int, default=512)
@@ -106,6 +117,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow_tf32", action="store_true")
     parser.add_argument("--seed", type=int, default=20260903)
     parser.add_argument("--resume_from_checkpoint", default=None)
+    parser.add_argument(
+        "--init_from_checkpoint",
+        default=None,
+        help=(
+            "Load only the saved raft_student weights, then start a fresh optimizer, "
+            "scheduler, and global step. Use this for a changed optimization configuration."
+        ),
+    )
     parser.add_argument("--evaluate_only", default=None)
     parser.add_argument("--preflight_only", action="store_true")
     parser.add_argument("--allow_teacher_checkpoint_mismatch", action="store_true")
@@ -126,6 +145,63 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def student_checkpoint(args: argparse.Namespace) -> Path:
+    if args.student_backend == "propainter_raft":
+        if args.raft_checkpoint is None:
+            raise ValueError("--raft_checkpoint is required for --student_backend propainter_raft")
+        return args.raft_checkpoint
+    if args.student_backend == "sea_raft":
+        if args.sea_raft_checkpoint is None:
+            raise ValueError("--sea_raft_checkpoint is required for --student_backend sea_raft")
+        return args.sea_raft_checkpoint
+    raise ValueError(f"Unknown student backend {args.student_backend!r}")
+
+
+def student_description(args: argparse.Namespace) -> str:
+    return {
+        "propainter_raft": "pretrained ProPainter RAFT student on degraded RGB",
+        "sea_raft": "pretrained SEA-RAFT student on degraded RGB",
+    }[args.student_backend]
+
+
+def build_student(args: argparse.Namespace):
+    if args.student_backend == "propainter_raft":
+        return RAFTStudentFlowPredictor(
+            args.propainter_root,
+            student_checkpoint(args),
+            iterations=args.raft_iterations,
+            mixed_precision=args.mixed_precision != "no",
+            freeze_batchnorm=args.freeze_batchnorm,
+        )
+    if args.student_backend == "sea_raft":
+        return SEAStudentFlowPredictor(
+            args.sea_raft_root,
+            args.sea_raft_cfg,
+            student_checkpoint(args),
+            iterations=args.raft_iterations,
+            freeze_batchnorm=args.freeze_batchnorm,
+        )
+    raise ValueError(args.student_backend)
+
+
+def load_saved_student(model_dir: Path, args: argparse.Namespace):
+    if args.student_backend == "propainter_raft":
+        return RAFTStudentFlowPredictor.from_pretrained(
+            model_dir,
+            propainter_root=args.propainter_root,
+            raft_checkpoint=student_checkpoint(args),
+            mixed_precision=args.mixed_precision != "no",
+        )
+    if args.student_backend == "sea_raft":
+        return SEAStudentFlowPredictor.from_pretrained(
+            model_dir,
+            sea_raft_root=args.sea_raft_root,
+            sea_raft_cfg=args.sea_raft_cfg,
+            sea_raft_checkpoint=student_checkpoint(args),
+        )
+    raise ValueError(args.student_backend)
 
 
 def checkpoint_step(path: Path) -> int:
@@ -159,6 +235,52 @@ def resolve_checkpoint(value: Optional[str], output_dir: Path) -> Optional[Path]
     if not (path / "raft_student" / "pytorch_model.bin").is_file():
         raise FileNotFoundError(f"No RAFT student weights under {path}")
     return path
+
+
+def _saved_student_architecture(student_backend: str) -> str:
+    return {
+        "propainter_raft": "propainter_raft_large",
+        "sea_raft": "sea_raft",
+    }[student_backend]
+
+
+def initialize_student_from_checkpoint(model: torch.nn.Module, checkpoint: Path, args: argparse.Namespace) -> Dict:
+    """Warm-start model weights without restoring optimizer or scheduler state."""
+    model_dir = checkpoint / "raft_student"
+    config_path = model_dir / "config.json"
+    weights_path = model_dir / "pytorch_model.bin"
+    if not config_path.is_file() or not weights_path.is_file():
+        raise FileNotFoundError(f"Expected config.json and pytorch_model.bin in {model_dir}")
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    expected_architecture = _saved_student_architecture(args.student_backend)
+    saved_architecture = saved_config.get("architecture")
+    if saved_architecture != expected_architecture:
+        raise ValueError(
+            "Initialization checkpoint architecture mismatch: "
+            f"{saved_architecture!r} != {expected_architecture!r}"
+        )
+    try:
+        state = torch.load(str(weights_path), map_location="cpu", weights_only=True)
+    except TypeError:  # PyTorch < 2.0
+        state = torch.load(str(weights_path), map_location="cpu")
+    if not isinstance(state, dict):
+        raise TypeError(f"Saved student weights must be a state dict: {weights_path}")
+    state = {
+        str(key)[len("module.") :] if str(key).startswith("module.") else str(key): value
+        for key, value in state.items()
+    }
+    report = model.load_state_dict(state, strict=True)
+    if report.missing_keys or report.unexpected_keys:
+        raise RuntimeError(
+            "Initialization student transfer mismatch: "
+            f"missing={report.missing_keys}, unexpected={report.unexpected_keys}"
+        )
+    return {
+        "checkpoint": str(checkpoint),
+        "architecture": saved_architecture,
+        "saved_iterations": saved_config.get("iterations"),
+        "current_iterations": int(args.raft_iterations),
+    }
 
 
 def _five(value: torch.Tensor) -> torch.Tensor:
@@ -442,7 +564,7 @@ class FlowMetricAccumulator:
 
 
 def validate(
-    model: RAFTStudentFlowPredictor,
+    model: torch.nn.Module,
     loader: DataLoader,
     args: argparse.Namespace,
     accelerator: Accelerator,
@@ -483,11 +605,10 @@ def _metric_score(metrics: Dict[str, float], best_metric: str) -> float:
 
 
 def _config_contract(args: argparse.Namespace) -> Dict:
-    keys = (
+    keys = [
         "dataset_root",
         "teacher_flow_root",
-        "propainter_root",
-        "raft_checkpoint",
+        "student_backend",
         "train_split",
         "valid_split",
         "resolution",
@@ -497,13 +618,19 @@ def _config_contract(args: argparse.Namespace) -> Dict:
         "flow_loss_region",
         "freeze_batchnorm",
         "mixed_precision",
-    )
+    ]
+    if args.student_backend == "propainter_raft":
+        keys.extend(("propainter_root", "raft_checkpoint"))
+    elif args.student_backend == "sea_raft":
+        keys.extend(("sea_raft_root", "sea_raft_cfg", "sea_raft_checkpoint"))
+    else:
+        raise ValueError(args.student_backend)
     return {key: str(getattr(args, key)) if isinstance(getattr(args, key), Path) else getattr(args, key) for key in keys}
 
 
 def save_checkpoint(
     accelerator: Accelerator,
-    model: RAFTStudentFlowPredictor,
+    model: torch.nn.Module,
     output_dir: Path,
     step: int,
     best_score: float,
@@ -528,6 +655,7 @@ def save_checkpoint(
             "best_score": float(best_score),
             "validation": validation,
             "contract": _config_contract(args),
+            "initialization_checkpoint": args.init_from_checkpoint,
         }
         json_dump(checkpoint / "metadata.json", metadata)
         json_dump(output_dir / "latest.json", {"checkpoint": checkpoint.name, "global_step": int(step)})
@@ -575,10 +703,19 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"{name} must be non-negative")
     if not 0.0 < float(args.raft_sequence_gamma) <= 1.0:
         raise ValueError("raft_sequence_gamma must lie in (0,1]")
-    if not (args.propainter_root / "RAFT" / "raft.py").is_file():
-        raise FileNotFoundError(args.propainter_root / "RAFT" / "raft.py")
-    if not args.raft_checkpoint.is_file():
-        raise FileNotFoundError(args.raft_checkpoint)
+    checkpoint = student_checkpoint(args)
+    if not checkpoint.is_file():
+        raise FileNotFoundError(checkpoint)
+    if args.student_backend == "propainter_raft":
+        if not (args.propainter_root / "RAFT" / "raft.py").is_file():
+            raise FileNotFoundError(args.propainter_root / "RAFT" / "raft.py")
+    elif args.student_backend == "sea_raft":
+        if not (args.sea_raft_root / "core" / "raft.py").is_file():
+            raise FileNotFoundError(args.sea_raft_root / "core" / "raft.py")
+        if not args.sea_raft_cfg.is_file():
+            raise FileNotFoundError(args.sea_raft_cfg)
+    else:
+        raise ValueError(f"Unknown student backend {args.student_backend!r}")
 
 
 def preflight(args: argparse.Namespace) -> Dict:
@@ -586,9 +723,21 @@ def preflight(args: argparse.Namespace) -> Dict:
     if not metadata_path.is_file():
         raise FileNotFoundError(metadata_path)
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    cached_hash = metadata.get("raft_sha256")
-    student_hash = sha256(args.raft_checkpoint)
-    if cached_hash and cached_hash != student_hash and not args.allow_teacher_checkpoint_mismatch:
+    # Legacy ProPainter caches stored ``raft_sha256`` and V7 originally
+    # required it to equal the student initialization checkpoint. A teacher
+    # and distilled student are permitted to differ, so retain that check only
+    # for the old ProPainter-teacher/ProPainter-student contract.
+    teacher_backend = metadata.get("teacher_backend", "propainter_raft")
+    cached_hash = metadata.get("teacher_sha256", metadata.get("raft_sha256"))
+    source_checkpoint = student_checkpoint(args)
+    student_hash = sha256(source_checkpoint)
+    if (
+        teacher_backend == "propainter_raft"
+        and args.student_backend == "propainter_raft"
+        and cached_hash
+        and cached_hash != student_hash
+        and not args.allow_teacher_checkpoint_mismatch
+    ):
         raise ValueError(
             "RAFT student checkpoint differs from the frozen teacher cache. "
             "Pass --allow_teacher_checkpoint_mismatch only for an explicit ablation."
@@ -603,14 +752,16 @@ def preflight(args: argparse.Namespace) -> Dict:
     evenly_limit_pairs_per_sequence(valid_set, args.valid_pairs_per_sequence)
     return {
         "status": "ok",
-        "model": "pretrained ProPainter RAFT student on degraded RGB",
-        "teacher": "frozen cached clean ProPainter RAFT flow",
+        "model": student_description(args),
+        "student_backend": args.student_backend,
+        "teacher": f"frozen cached clean {teacher_backend} flow",
         "dataset_root": str(args.dataset_root),
         "teacher_flow_root": str(args.teacher_flow_root),
         "teacher_cache_resolution": [metadata.get("height"), metadata.get("width")],
-        "teacher_checkpoint": metadata.get("raft_checkpoint"),
+        "teacher_backend": teacher_backend,
+        "teacher_checkpoint": metadata.get("teacher_checkpoint", metadata.get("raft_checkpoint")),
         "teacher_checkpoint_sha256": cached_hash,
-        "student_checkpoint": str(args.raft_checkpoint),
+        "student_checkpoint": str(source_checkpoint),
         "student_checkpoint_sha256": student_hash,
         "train_pair_count": len(train_set),
         "valid_pair_count_before_limit": original_valid_pairs,
@@ -621,7 +772,11 @@ def preflight(args: argparse.Namespace) -> Dict:
         "iterative_supervision": not bool(args.final_flow_only),
         "deform_feature_size": int(args.deform_feature_size),
         "deform_residual_range_feature_px": float(args.deform_residual_range),
-        "normalization": "degraded RGB [0,1] -> [-1,1]",
+        "normalization": (
+            "degraded RGB [0,1] -> [-1,1]"
+            if args.student_backend == "propainter_raft"
+            else "degraded RGB [0,1] -> [-1,1] -> SEA-RAFT RGB [0,255]"
+        ),
         "flow_convention": "forward=t->t+1 on t; backward=t+1->t on t+1; [dx,dy]",
     }
 
@@ -631,7 +786,12 @@ def main(args: argparse.Namespace) -> None:
     args.teacher_flow_root = args.teacher_flow_root.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().resolve()
     args.propainter_root = args.propainter_root.expanduser().resolve()
-    args.raft_checkpoint = args.raft_checkpoint.expanduser().resolve()
+    args.sea_raft_root = args.sea_raft_root.expanduser().resolve()
+    args.sea_raft_cfg = args.sea_raft_cfg.expanduser().resolve()
+    if args.raft_checkpoint is not None:
+        args.raft_checkpoint = args.raft_checkpoint.expanduser().resolve()
+    if args.sea_raft_checkpoint is not None:
+        args.sea_raft_checkpoint = args.sea_raft_checkpoint.expanduser().resolve()
     validate_args(args)
     preflight_report = preflight(args)
     print(json.dumps(preflight_report, indent=2, sort_keys=True), flush=True)
@@ -639,9 +799,16 @@ def main(args: argparse.Namespace) -> None:
         return
 
     resume = resolve_checkpoint(args.resume_from_checkpoint, args.output_dir)
+    initialization_checkpoint = resolve_checkpoint(args.init_from_checkpoint, args.output_dir)
     evaluate_checkpoint = resolve_checkpoint(args.evaluate_only, args.output_dir)
-    if resume is not None and evaluate_checkpoint is not None:
-        raise ValueError("resume_from_checkpoint and evaluate_only are mutually exclusive")
+    selected_modes = sum(path is not None for path in (resume, initialization_checkpoint, evaluate_checkpoint))
+    if selected_modes > 1:
+        raise ValueError(
+            "--resume_from_checkpoint, --init_from_checkpoint, and --evaluate_only are mutually exclusive"
+        )
+    if initialization_checkpoint is not None:
+        # Store the resolved absolute source in run_config/checkpoint metadata.
+        args.init_from_checkpoint = str(initialization_checkpoint)
     existing = [path for path in args.output_dir.glob("checkpoint-*") if path.is_dir()]
     if existing and resume is None and evaluate_checkpoint is None:
         raise ValueError(
@@ -675,12 +842,7 @@ def main(args: argparse.Namespace) -> None:
     valid_loader = DataLoader(valid_set, batch_size=args.train_batch_size, shuffle=False, drop_last=False, **loader_args)
 
     if evaluate_checkpoint is not None:
-        model = RAFTStudentFlowPredictor.from_pretrained(
-            evaluate_checkpoint / "raft_student",
-            propainter_root=args.propainter_root,
-            raft_checkpoint=args.raft_checkpoint,
-            mixed_precision=args.mixed_precision != "no",
-        )
+        model = load_saved_student(evaluate_checkpoint / "raft_student", args)
         model, valid_loader = accelerator.prepare(model, valid_loader)
         metrics = validate(accelerator.unwrap_model(model), valid_loader, args, accelerator)
         if accelerator.is_main_process:
@@ -690,13 +852,11 @@ def main(args: argparse.Namespace) -> None:
         accelerator.wait_for_everyone()
         return
 
-    model = RAFTStudentFlowPredictor(
-        args.propainter_root,
-        args.raft_checkpoint,
-        iterations=args.raft_iterations,
-        mixed_precision=args.mixed_precision != "no",
-        freeze_batchnorm=args.freeze_batchnorm,
-    )
+    model = build_student(args)
+    if initialization_checkpoint is not None:
+        initialization = initialize_student_from_checkpoint(model, initialization_checkpoint, args)
+        if accelerator.is_main_process:
+            print("WARM_START " + json.dumps(initialization, sort_keys=True), flush=True)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,

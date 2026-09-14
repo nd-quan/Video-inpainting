@@ -32,6 +32,7 @@ if str(THIS_DIR) not in sys.path:
 
 from diffusers.models.stc_flow_training import prepare_teacher_flow  # noqa: E402
 from raft_student import RAFTStudentFlowPredictor  # noqa: E402
+from sea_raft_student import SEAStudentFlowPredictor  # noqa: E402
 from raft_teacher_pair_data import RAFTTeacherFlowPairDataset  # noqa: E402
 
 
@@ -54,6 +55,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epe_scale_percentile", type=float, default=99.0)
     parser.add_argument("--propainter_root", type=Path, default=None)
     parser.add_argument("--raft_checkpoint", type=Path, default=None)
+    parser.add_argument("--sea_raft_root", type=Path, default=None)
+    parser.add_argument("--sea_raft_cfg", type=Path, default=None)
+    parser.add_argument("--sea_raft_checkpoint", type=Path, default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no_amp", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -214,12 +218,23 @@ def main() -> None:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
     checkpoint_root, student_dir = resolve_checkpoint(args.checkpoint)
-    model = RAFTStudentFlowPredictor.from_pretrained(
-        student_dir,
-        propainter_root=args.propainter_root,
-        raft_checkpoint=args.raft_checkpoint,
-        mixed_precision=device.type == "cuda" and not args.no_amp,
-    ).to(device=device, dtype=torch.float32).eval()
+    student_config = json.loads((student_dir / "config.json").read_text(encoding="utf-8"))
+    architecture = student_config.get("architecture", "propainter_raft_large")
+    if architecture == "sea_raft":
+        model = SEAStudentFlowPredictor.from_pretrained(
+            student_dir,
+            sea_raft_root=args.sea_raft_root,
+            sea_raft_cfg=args.sea_raft_cfg,
+            sea_raft_checkpoint=args.sea_raft_checkpoint,
+        )
+    else:
+        model = RAFTStudentFlowPredictor.from_pretrained(
+            student_dir,
+            propainter_root=args.propainter_root,
+            raft_checkpoint=args.raft_checkpoint,
+            mixed_precision=device.type == "cuda" and not args.no_amp,
+        )
+    model = model.to(device=device, dtype=torch.float32).eval()
     model.requires_grad_(False)
     dataset = RAFTTeacherFlowPairDataset(
         args.dataset_root, args.teacher_flow_root, args.split, args.resolution, args.include_branches

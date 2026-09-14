@@ -166,6 +166,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raft_pair_batch_size", type=int, default=1)
     parser.add_argument("--deformable_alignment_scale", type=float, default=1.0)
     parser.add_argument("--tile_size", type=int, default=256)
+    parser.add_argument(
+        "--tile_gap",
+        type=int,
+        default=0,
+        help="Dark-gray spacing in pixels between montage tiles.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no_amp", action="store_true")
     parser.add_argument("--output_dir", type=Path, required=True)
@@ -257,8 +263,14 @@ def label(image: np.ndarray, text: str) -> np.ndarray:
 
 
 def montage(
-    tiles: Sequence[Tuple[str, np.ndarray]], tile_size: int, columns: int = 4
+    tiles: Sequence[Tuple[str, np.ndarray]],
+    tile_size: int,
+    columns: int = 4,
+    gap: int = 0,
 ) -> np.ndarray:
+    gap = int(gap)
+    if gap < 0:
+        raise ValueError("montage gap must be non-negative")
     rendered = [
         label(
             cv2.resize(image, (tile_size, tile_size), interpolation=cv2.INTER_AREA),
@@ -269,11 +281,25 @@ def montage(
     blank = np.zeros((tile_size, tile_size, 3), dtype=np.uint8)
     while len(rendered) % columns:
         rendered.append(blank.copy())
-    rows = [
-        np.concatenate(rendered[index : index + columns], axis=1)
-        for index in range(0, len(rendered), columns)
-    ]
-    return np.concatenate(rows, axis=0)
+    vertical_gap = np.full((tile_size, gap, 3), 32, dtype=np.uint8)
+    rows = []
+    for index in range(0, len(rendered), columns):
+        row_tiles = rendered[index : index + columns]
+        row_parts = []
+        for tile_index, tile in enumerate(row_tiles):
+            if tile_index and gap:
+                row_parts.append(vertical_gap)
+            row_parts.append(tile)
+        rows.append(np.concatenate(row_parts, axis=1))
+    if not gap:
+        return np.concatenate(rows, axis=0)
+    horizontal_gap = np.full((gap, rows[0].shape[1], 3), 32, dtype=np.uint8)
+    parts = []
+    for row_index, row in enumerate(rows):
+        if row_index:
+            parts.append(horizontal_gap)
+        parts.append(row)
+    return np.concatenate(parts, axis=0)
 
 
 def percentile_scale(values: Sequence[torch.Tensor], percentile: float = 99.0) -> float:
