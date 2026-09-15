@@ -57,6 +57,15 @@ def _add_evaluation_arguments(parser) -> None:
     """Combine V8 condition, temporal-DDIM, and whole-video shard controls."""
     v8_evaluator._add_evaluation_arguments(parser)
     temporal_v5.add_temporal_guidance_arguments(parser)
+    parser.add_argument(
+        "--temporal_guidance_space",
+        choices=("rgb", "latent"),
+        default="rgb",
+        help=(
+            "Compute temporal DDIM guidance after VAE decoding (rgb) or "
+            "directly on predicted-clean VAE latents (latent)."
+        ),
+    )
     # Match the established temporal-student protocol for 50 DDIM steps.
     parser.set_defaults(temporal_start_step=25, temporal_end_step=35)
     parser.add_argument(
@@ -142,6 +151,7 @@ def preflight(args):
                     int(args.temporal_end_step),
                 ],
                 "guidance_scale": float(args.temporal_guidance_scale),
+                "guidance_space": str(args.temporal_guidance_space),
                 "clip_local_scheduler_guidance": True,
                 "cross_clip_scheduler_state": False,
                 "shard": shard,
@@ -222,7 +232,11 @@ def before_pipeline_call(
         threshold=0.5,
     )
     pipe.scheduler.set_temporal_guidance(
-        decoder=pipe.vae.decode,
+        decoder=(
+            pipe.vae.decode
+            if str(args.temporal_guidance_space) == "rgb"
+            else None
+        ),
         flow_backward=flow_backward,
         stable_bg=stable_bg,
         # Keep the per-frame latent update strictly inside each frame's BG.
@@ -239,6 +253,7 @@ def before_pipeline_call(
         detach_previous=bool(args.temporal_detach_previous),
         enabled=True,
         loss_type=str(args.temporal_loss_type),
+        guidance_space=str(args.temporal_guidance_space),
     )
     return {
         "temporal_guidance_enabled": 1,
@@ -246,6 +261,7 @@ def before_pipeline_call(
         "temporal_stable_bg_ratio": float(stable_bg.mean().detach().cpu()),
         "temporal_visibility_ratio": float(visibility.mean().detach().cpu()),
         "temporal_flow_backend": "v7_student",
+        "temporal_guidance_space": str(args.temporal_guidance_space),
         "temporal_flow_backward_magnitude": float(
             flow_backward.square().sum(dim=1).sqrt().mean().detach().cpu()
         ),

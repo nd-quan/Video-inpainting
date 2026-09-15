@@ -110,8 +110,8 @@ def parse_args():
         nargs="+",
         metavar="CLASS/SEQUENCE",
         help=(
-            "Evaluate only these branches of a hierarchical dataset, for example "
-            "Class_A/Traffic Class_D/BasketballPass."
+            "Evaluate only these branches. Use Class/Sequence for hierarchical "
+            "datasets, or a plain sequence name such as BasketballPass for flat_test."
         ),
     )
     parser.add_argument("--image_encoder_name_or_path", default=DEFAULT_IMAGE_ENCODER)
@@ -251,11 +251,7 @@ def preflight(args) -> Tuple[HierarchicalV8ClipDataset, Dict[str, Path]]:
         clip_length=args.clip_length,
         stride=args.clip_stride,
         resolution=args.resolution,
-        **(
-            {"include_branches": args.include_branches}
-            if dataset_layout == "hierarchical"
-            else {}
-        ),
+        include_branches=args.include_branches,
     )
     adapter = RGBSTCConditionAdapter.from_pretrained(str(args.stc_adapter_path))
     if adapter.config.condition_mode != "full_rgb_bg_mask":

@@ -511,6 +511,7 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
         clip_length: int = 4,
         stride: int = 1,
         resolution: int = 512,
+        include_branches: Optional[Sequence[str]] = None,
     ):
         self.dataset_root = Path(dataset_root).expanduser().resolve()
         self.split = str(split)
@@ -519,6 +520,19 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
         self.stride = int(stride)
         self.resolution = int(resolution)
         self.clip_image_processor = clip_image_processor
+        requested_sequences = []
+        for raw_sequence in include_branches or ():
+            sequence = str(raw_sequence).strip().strip("/")
+            if not sequence or "/" in sequence:
+                raise ValueError(
+                    "Flat test include_branches entries must be sequence names "
+                    f"without '/': {raw_sequence!r}"
+                )
+            requested_sequences.append(sequence)
+        if len(requested_sequences) != len(set(requested_sequences)):
+            raise ValueError("Flat test include_branches must not contain duplicates")
+        self.include_branches = tuple(requested_sequences)
+        selected_sequences = set(requested_sequences)
         if self.clip_length < 2:
             raise ValueError("clip_length must be at least 2 for shared noise")
         if self.stride <= 0:
@@ -537,6 +551,8 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
             (path for path in self.dataset_root.iterdir() if path.is_dir()),
             key=lambda path: path.name,
         ):
+            if selected_sequences and sequence_root.name not in selected_sequences:
+                continue
             kind_roots = {
                 kind: sequence_root / source_kind
                 for kind, source_kind in self._SOURCE_KINDS.items()
@@ -613,6 +629,14 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
             if len({frame for frame, _ in indexed_paths}) != len(indexed_paths):
                 raise ValueError(f"Duplicate numeric frame id in branch {branch}")
             branches[branch] = indexed_paths
+
+        available_sequences = {branch.as_posix() for branch in branches}
+        missing_sequences = selected_sequences - available_sequences
+        if missing_sequences:
+            raise ValueError(
+                "Requested flat test sequences were not found or invalid below "
+                f"{self.dataset_root}: {sorted(missing_sequences)}"
+            )
 
         if not branches:
             raise ValueError(

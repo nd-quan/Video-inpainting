@@ -126,6 +126,17 @@ EXTRA_TRAIN_LOSS_FN: Optional[Callable] = None
 # optimizer and DDP wrapper are created, so exact resume keeps one fixed graph
 # and one fixed optimizer schema for the lifetime of a run.
 CONFIGURE_TRAINABLE_PARAMETERS_FN: Optional[Callable] = None
+# Optional optimizer/scheduler hooks used by variants that need multiple
+# parameter groups (for example, a newly initialized alignment branch and a
+# lower-LR pretrained temporal branch).  Defaults preserve every existing
+# V3--V8 optimizer and resume contract.
+OPTIMIZER_PARAM_GROUPS_FN: Optional[Callable] = None
+LR_SCHEDULER_FACTORY_FN: Optional[Callable] = None
+EXTRA_OPTIMIZER_METRICS_FN: Optional[Callable] = None
+# Called after backward and before clipping/optimizer.step.  A variant may set
+# selected gradients to None during a staged warm-up without changing the DDP
+# graph or optimizer schema, which keeps exact resume well-defined.
+BEFORE_OPTIMIZER_STEP_FN: Optional[Callable] = None
 POST_DATASET_VALIDATION_FN: Optional[Callable] = None
 TRAIN_DATALOADER_DROP_LAST = False
 FULL_MODEL_COMPONENT_NAME = "stc_flow_model"
@@ -835,19 +846,34 @@ def main(args):
     ]
     if not trainable_parameters:
         raise RuntimeError("The selected training stage has no trainable parameters")
+    optimizer_parameters = trainable_parameters
+    if OPTIMIZER_PARAM_GROUPS_FN is not None:
+        optimizer_parameters = OPTIMIZER_PARAM_GROUPS_FN(
+            model=model,
+            args=args,
+        )
+        if not optimizer_parameters:
+            raise RuntimeError("Variant optimizer hook returned no parameter groups")
     optimizer = optimizer_class(
-        trainable_parameters,
+        optimizer_parameters,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-    lr_scheduler = get_scheduler(
-        args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-        num_training_steps=args.max_train_steps * accelerator.num_processes,
-    )
+    if LR_SCHEDULER_FACTORY_FN is None:
+        lr_scheduler = get_scheduler(
+            args.lr_scheduler,
+            optimizer=optimizer,
+            num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+            num_training_steps=args.max_train_steps * accelerator.num_processes,
+        )
+    else:
+        lr_scheduler = LR_SCHEDULER_FACTORY_FN(
+            optimizer=optimizer,
+            args=args,
+            accelerator=accelerator,
+        )
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, dataloader, lr_scheduler
     )
@@ -1192,6 +1218,13 @@ def main(args):
                 )
 
                 accelerator.backward(loss)
+                if BEFORE_OPTIMIZER_STEP_FN is not None:
+                    BEFORE_OPTIMIZER_STEP_FN(
+                        model=model,
+                        optimizer=optimizer,
+                        global_step=global_step,
+                        args=args,
+                    )
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
                         trainable_parameters, args.max_grad_norm
@@ -1274,6 +1307,14 @@ def main(args):
                         ),
                         "train/lr": float(lr_scheduler.get_last_lr()[0]),
                     }
+                    if EXTRA_OPTIMIZER_METRICS_FN is not None:
+                        logs.update(
+                            EXTRA_OPTIMIZER_METRICS_FN(
+                                optimizer=optimizer,
+                                lr_scheduler=lr_scheduler,
+                                global_step=global_step,
+                            )
+                        )
                     if extra_loss_output is not None:
                         extra_loss_metrics = getattr(
                             extra_loss_output, "metrics", {}

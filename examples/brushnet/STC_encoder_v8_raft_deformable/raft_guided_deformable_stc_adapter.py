@@ -260,6 +260,36 @@ class RAFTGuidedDeformableBGSTCAdapter(FlowGuidedDeformableBGSTCAdapter):
         ) * (feature_valid & flow_valid).to(spatial.dtype)
         return confidence.detach().reshape(batch, frames - 1, 1, height, width)
 
+    def _raft_deformable_spatial_alignment(
+        self,
+        spatial: torch.Tensor,
+        base_aligned: torch.Tensor,
+        flow_forward: torch.Tensor,
+        flow_backward: torch.Tensor,
+        confidence_backward: torch.Tensor,
+        bg_mask_sequence: torch.Tensor,
+        fusion_scale: float,
+        raft_flow_forward_rgb: torch.Tensor,
+        raft_flow_backward_rgb: torch.Tensor,
+    ):
+        """Dispatch V8 alignment while retaining RGB flow for derived variants.
+
+        Native V8 deliberately ignores the extra RGB tensors.  Rescaled-warp
+        variants override this method so they can resize the original RGB flow
+        directly to their intermediate grid instead of upsampling an already
+        downsampled feature-grid flow.
+        """
+        del raft_flow_forward_rgb, raft_flow_backward_rgb
+        return self._deformable_spatial_alignment(
+            spatial,
+            base_aligned,
+            flow_forward,
+            flow_backward,
+            confidence_backward,
+            bg_mask_sequence,
+            fusion_scale,
+        )
+
     def encode(
         self,
         rgb_sequence: torch.Tensor,
@@ -320,7 +350,7 @@ class RAFTGuidedDeformableBGSTCAdapter(FlowGuidedDeformableBGSTCAdapter):
             mask_backward,
             mask_forward,
             deformation_minus_base,
-        ) = self._deformable_spatial_alignment(
+        ) = self._raft_deformable_spatial_alignment(
             spatial,
             base_aligned,
             raft_forward,
@@ -328,6 +358,8 @@ class RAFTGuidedDeformableBGSTCAdapter(FlowGuidedDeformableBGSTCAdapter):
             raft_confidence_backward,
             bg_mask_sequence,
             deformable_alignment_scale,
+            raft_flow_forward_rgb,
+            raft_flow_backward_rgb,
         )
 
         memory, overlap_count = self._validated_memory(

@@ -26,6 +26,7 @@ if str(V7_DIR) not in sys.path:
     sys.path.insert(0, str(V7_DIR))
 
 from raft_student import RAFTStudentFlowPredictor  # noqa: E402
+from sea_raft_student import SEAStudentFlowPredictor  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -80,11 +81,27 @@ class FrozenV7RAFTFlowProvider:
         if int(pair_batch_size) < 1:
             raise ValueError("pair_batch_size must be positive")
         self.pair_batch_size = int(pair_batch_size)
-        self.student = RAFTStudentFlowPredictor.from_pretrained(
-            self.raft_student_path,
-            map_location="cpu",
-            mixed_precision=bool(mixed_precision),
-        ).to(device=self.device, dtype=torch.float32)
+        config = json.loads(
+            (self.raft_student_path / "config.json").read_text(encoding="utf-8")
+        )
+        architecture = str(config.get("architecture", "propainter_raft_large"))
+        if architecture == "sea_raft":
+            self.student = SEAStudentFlowPredictor.from_pretrained(
+                self.raft_student_path,
+                map_location="cpu",
+            )
+        elif architecture == "propainter_raft_large":
+            self.student = RAFTStudentFlowPredictor.from_pretrained(
+                self.raft_student_path,
+                map_location="cpu",
+                mixed_precision=bool(mixed_precision),
+            )
+        else:
+            raise ValueError(
+                "Unsupported V7 flow-student architecture "
+                f"{architecture!r} in {self.raft_student_path / 'config.json'}"
+            )
+        self.student = self.student.to(device=self.device, dtype=torch.float32)
         self.student.requires_grad_(False)
         self.student.eval()
 
