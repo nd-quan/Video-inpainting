@@ -35,6 +35,9 @@ from STC_encoder_v8_rescaled_deformable.rescaled_raft_deformable_stc_adapter imp
     RescaledRAFTGuidedDeformableBGSTCAdapter,
     augment_brushnet_condition_v8_rescaled,
 )
+from STC_encoder_v8_rescaled_deformable.temporal_training_loss import (
+    compute_temporal_training_loss,
+)
 
 
 EXPERIMENT_NAME = "rgb_stc_v8_rescaled_prewarp_joint"
@@ -77,6 +80,26 @@ def _add_variant_arguments(parser) -> None:
     parser.add_argument("--deform_learning_rate", type=float, default=2e-5)
     parser.add_argument("--temporal_learning_rate", type=float, default=5e-6)
     parser.add_argument("--temporal_lr_warmup_steps", type=int, default=100)
+    # Default zero keeps the existing V8-R launcher a reproducible baseline;
+    # the dedicated temporal launcher enables the first experiment explicitly.
+    parser.add_argument("--temporal_train_loss_weight", type=float, default=0.0)
+    parser.add_argument("--temporal_train_loss_warmup_steps", type=int, default=500)
+    parser.add_argument(
+        "--temporal_train_charbonnier_eps", type=float, default=1e-3
+    )
+    temporal_detach = parser.add_mutually_exclusive_group()
+    temporal_detach.add_argument(
+        "--temporal_train_detach_previous",
+        dest="temporal_train_detach_previous",
+        action="store_true",
+    )
+    temporal_detach.add_argument(
+        "--temporal_train_no_detach_previous",
+        dest="temporal_train_detach_previous",
+        action="store_false",
+    )
+    parser.set_defaults(temporal_train_detach_previous=True)
+    parser.add_argument("--temporal_train_snr_gamma", type=float, default=5.0)
     parser.add_argument(
         "--reset_deformable_branch",
         dest="reset_deformable_branch",
@@ -236,6 +259,39 @@ def _resolved_initialization(args) -> str:
     return str(v8.resolve_complete_component(args.init_v8_model, "stc_v8_model"))
 
 
+def _build_temporal_training_loss(
+    *,
+    model_prediction,
+    noisy_latents,
+    timesteps,
+    noise_scheduler,
+    batch,
+    stc_output,
+    bg_mask_sequence,
+    num_clips,
+    num_frames,
+    args,
+    global_step,
+):
+    return compute_temporal_training_loss(
+        model_prediction=model_prediction,
+        noisy_latents=noisy_latents,
+        timesteps=timesteps,
+        noise_scheduler=noise_scheduler,
+        batch=batch,
+        stc_output=stc_output,
+        bg_mask_sequence=bg_mask_sequence,
+        num_clips=num_clips,
+        num_frames=num_frames,
+        global_step=global_step,
+        weight=args.temporal_train_loss_weight,
+        warmup_steps=args.temporal_train_loss_warmup_steps,
+        charbonnier_eps=args.temporal_train_charbonnier_eps,
+        detach_previous=args.temporal_train_detach_previous,
+        snr_gamma=args.temporal_train_snr_gamma,
+    )
+
+
 def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index):
     metadata = _base_checkpoint_metadata(
         args, accelerator, global_step, epoch, next_batch_index
@@ -276,7 +332,19 @@ def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index
                 resolve_raft_student_component(args.raft_student_path)
             ),
             "v7_raft_architecture": "propainter_raft_large",
-            "loss": "L_diff + ramp(0.1)*L_deform + 0.0005*L_offset",
+            "temporal_train_loss_type": "charbonnier_predicted_clean_latent",
+            "temporal_train_loss_weight": args.temporal_train_loss_weight,
+            "temporal_train_loss_warmup_steps": args.temporal_train_loss_warmup_steps,
+            "temporal_train_charbonnier_eps": args.temporal_train_charbonnier_eps,
+            "temporal_train_detach_previous": args.temporal_train_detach_previous,
+            "temporal_train_direction": "previous_only",
+            "temporal_train_snr_gamma": args.temporal_train_snr_gamma,
+            "temporal_train_flow_source": "clean_teacher_backward_flow",
+            "temporal_train_support": "stable_bg_x_teacher_valid",
+            "loss": (
+                "L_diff + ramp*L_deform + offset_weight*L_offset + "
+                "temporal_ramp*SNR_weight*L_temporal"
+            ),
         }
     )
     return metadata
@@ -311,6 +379,15 @@ def _resume_contract(args):
             "v7_raft_architecture": "propainter_raft_large",
             "v7_raft_pair_batch_size": args.raft_pair_batch_size,
             "v7_raft_mixed_precision": args.raft_mixed_precision,
+            "temporal_train_loss_type": "charbonnier_predicted_clean_latent",
+            "temporal_train_loss_weight": args.temporal_train_loss_weight,
+            "temporal_train_loss_warmup_steps": args.temporal_train_loss_warmup_steps,
+            "temporal_train_charbonnier_eps": args.temporal_train_charbonnier_eps,
+            "temporal_train_detach_previous": args.temporal_train_detach_previous,
+            "temporal_train_direction": "previous_only",
+            "temporal_train_snr_gamma": args.temporal_train_snr_gamma,
+            "temporal_train_flow_source": "clean_teacher_backward_flow",
+            "temporal_train_support": "stable_bg_x_teacher_valid",
         }
     )
     return contract
@@ -322,6 +399,7 @@ def _install_variant() -> None:
     trainer.augment_brushnet_condition = augment_brushnet_condition_v8_rescaled
     trainer.FEATURE_ALIGNMENT_LOSS_FN = compute_feature_alignment_loss
     trainer.EXTRA_TRAIN_LOSS_FN = v8._build_v8_extra_train_loss
+    trainer.POST_PREDICTION_LOSS_FN = _build_temporal_training_loss
     trainer.CONFIGURE_TRAINABLE_PARAMETERS_FN = _configure_trainable_parameters
     trainer.OPTIMIZER_PARAM_GROUPS_FN = _optimizer_param_groups
     trainer.LR_SCHEDULER_FACTORY_FN = _lr_scheduler_factory
@@ -359,6 +437,10 @@ def parse_args(input_args=None):
         raise ValueError("V8-R rejects --init_stc_adapter")
     if args.mixed_precision == "bf16":
         raise ValueError("torchvision deform_conv2d requires fp16/float32 here")
+    if args.independent_frame_timesteps:
+        raise ValueError(
+            "V8-R temporal training loss requires one shared diffusion timestep per clip"
+        )
     args.init_v8_model = str(Path(args.init_v8_model).expanduser().resolve())
     args.raft_student_path = str(
         resolve_raft_student_component(args.raft_student_path)
@@ -390,6 +472,17 @@ def parse_args(input_args=None):
             raise ValueError(f"{name} must be finite and positive")
     if args.deform_alignment_warmup_steps < 0 or args.temporal_lr_warmup_steps < 0:
         raise ValueError("warmup steps must be non-negative")
+    if (
+        not math.isfinite(args.temporal_train_loss_weight)
+        or args.temporal_train_loss_weight < 0.0
+    ):
+        raise ValueError("temporal_train_loss_weight must be finite and non-negative")
+    if args.temporal_train_loss_warmup_steps < 0:
+        raise ValueError("temporal_train_loss_warmup_steps must be non-negative")
+    for name in ("temporal_train_charbonnier_eps", "temporal_train_snr_gamma"):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
     if args.relative_position_max_distance < args.clip_length - 1:
         raise ValueError("relative_position_max_distance must cover T-1")
     overlap = args.clip_length - args.clip_stride
@@ -430,6 +523,17 @@ def run_preflight(args) -> None:
         "fb_confidence_role": "diagnostic_only",
         "deformable_alignment_direction": args.deformable_alignment_direction,
         "joint_unfreeze_step": args.joint_unfreeze_step,
+        "temporal_training_loss": {
+            "type": "charbonnier_predicted_clean_latent",
+            "weight": args.temporal_train_loss_weight,
+            "warmup_steps": args.temporal_train_loss_warmup_steps,
+            "charbonnier_eps": args.temporal_train_charbonnier_eps,
+            "detach_previous": args.temporal_train_detach_previous,
+            "direction": "previous_only",
+            "snr_gamma": args.temporal_train_snr_gamma,
+            "flow_source": "clean_teacher_backward_flow",
+            "support": "stable_bg_x_teacher_valid",
+        },
         "optimizer_groups": {
             "deform": {
                 "lr": args.deform_learning_rate,
@@ -442,7 +546,8 @@ def run_preflight(args) -> None:
         },
         "loss": (
             f"L_diff + ramp({args.deform_alignment_loss_weight})*L_deform "
-            f"+ {args.deform_offset_loss_weight}*L_offset"
+            f"+ {args.deform_offset_loss_weight}*L_offset + "
+            f"ramp*SNR*{args.temporal_train_loss_weight}*L_temporal"
         ),
     }
     print(json.dumps(report, indent=2, sort_keys=True))

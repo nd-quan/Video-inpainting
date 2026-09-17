@@ -122,6 +122,11 @@ EXTRA_TRAIN_METRICS_FN: Optional[Callable] = None
 # evaluated only after the optimizer update and therefore cannot train a
 # variant-specific branch.
 EXTRA_TRAIN_LOSS_FN: Optional[Callable] = None
+# Optional loss that needs the diffusion prediction itself (for example, a
+# predicted-clean latent objective).  It runs after ``model_prediction`` and
+# ``loss_diff`` exist and before the single shared backward call.  Keeping the
+# default unset preserves all predecessor variants.
+POST_PREDICTION_LOSS_FN: Optional[Callable] = None
 # Optional stage-specific trainability policy.  It is installed before the
 # optimizer and DDP wrapper are created, so exact resume keeps one fixed graph
 # and one fixed optimizer schema for the lifetime of a run.
@@ -1153,6 +1158,31 @@ def main(args):
                         model_prediction.float(), target.float(), reduction="mean"
                     )
 
+                post_prediction_output = None
+                loss_post_prediction = loss_diff.new_zeros(())
+                if POST_PREDICTION_LOSS_FN is not None:
+                    post_prediction_output = POST_PREDICTION_LOSS_FN(
+                        model_prediction=model_prediction,
+                        noisy_latents=noisy_latents,
+                        timesteps=timesteps,
+                        noise_scheduler=noise_scheduler,
+                        batch=batch,
+                        stc_output=stc_output,
+                        bg_mask_sequence=bg_mask_sequence,
+                        num_clips=num_clips,
+                        num_frames=num_frames,
+                        args=args,
+                        global_step=global_step,
+                    )
+                    loss_post_prediction = post_prediction_output.loss
+                    if (
+                        loss_post_prediction.ndim != 0
+                        or not loss_post_prediction.is_floating_point()
+                    ):
+                        raise ValueError(
+                            "Post-prediction loss must be a floating scalar"
+                        )
+
                 flow_output = compute_teacher_flow_loss(
                     predicted_forward=stc_output.predicted_flow_forward,
                     predicted_backward=stc_output.predicted_flow_backward,
@@ -1215,6 +1245,7 @@ def main(args):
                     + args.flow_loss_weight * loss_flow
                     + feature_weight * loss_feature
                     + loss_extra
+                    + loss_post_prediction
                 )
 
                 accelerator.backward(loss)
@@ -1339,6 +1370,39 @@ def main(args):
                                     name: float(value)
                                     for name, value in zip(
                                         extra_loss_names, extra_loss_tensors
+                                    )
+                                }
+                            )
+                    if post_prediction_output is not None:
+                        post_prediction_metrics = getattr(
+                            post_prediction_output, "metrics", {}
+                        )
+                        post_prediction_names = sorted(post_prediction_metrics)
+                        if post_prediction_names:
+                            post_prediction_values = []
+                            for name in post_prediction_names:
+                                value = torch.as_tensor(
+                                    post_prediction_metrics[name],
+                                    device=accelerator.device,
+                                    dtype=torch.float32,
+                                )
+                                if value.ndim != 0:
+                                    raise ValueError(
+                                        f"Post-prediction metric {name!r} must be scalar"
+                                    )
+                                post_prediction_values.append(value.detach())
+                            post_prediction_tensors = torch.stack(
+                                post_prediction_values
+                            )
+                            post_prediction_tensors = accelerator.gather(
+                                post_prediction_tensors.unsqueeze(0)
+                            ).mean(0)
+                            logs.update(
+                                {
+                                    name: float(value)
+                                    for name, value in zip(
+                                        post_prediction_names,
+                                        post_prediction_tensors,
                                     )
                                 }
                             )
