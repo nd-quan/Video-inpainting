@@ -19,15 +19,21 @@ def main():
     parser.add_argument('--eval-root', type=Path, required=True)
     parser.add_argument('--gt-root', type=Path, required=True)
     parser.add_argument('--allow-partial', action='store_true')
+    parser.add_argument('--sequences', nargs='+', help='Evaluate only these sequence names.')
+    parser.add_argument('--output-name', default='metrics_full_reference')
     args = parser.parse_args()
     eval_root = args.eval_root.resolve()
     gt_root = args.gt_root.resolve()
-    output = eval_root / 'metrics_full_reference'
+    if Path(args.output_name).name != args.output_name or args.output_name in {'.', '..'}:
+        raise ValueError('output-name must be a directory name')
+    output = eval_root / args.output_name
     if output.exists():
         raise FileExistsError(output)
     records = []
     for source in sorted(eval_root.iterdir()):
         if not source.is_dir():
+            continue
+        if args.sequences and source.name not in args.sequences:
             continue
         predictions = {int(p.stem): p for p in source.glob('*.png') if p.stem.isdigit()}
         if not predictions:
@@ -44,6 +50,8 @@ def main():
         records.append((source.name, ids, predictions, references, complete))
     if not records:
         raise ValueError('No generated sequences found')
+    if args.sequences and {record[0] for record in records} != set(args.sequences):
+        raise ValueError('Some requested sequences were not found')
     with tempfile.TemporaryDirectory(prefix='flat_sequence_metrics_') as temporary:
         stage = Path(temporary)
         provenance = []

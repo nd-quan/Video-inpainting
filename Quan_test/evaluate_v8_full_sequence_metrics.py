@@ -22,9 +22,7 @@ from imgToVideo_rgb_stc_eval import discover_sources, select_unique_frames
 
 BRUSHNET_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVALUATOR_ROOT = BRUSHNET_ROOT.parent / "video-inpainting-evaluation"
-METRIC_SCRIPT = (
-    BRUSHNET_ROOT / "examples/brushnet/DGAF_VSR_original/postprocess_eval.py"
-)
+METRIC_SCRIPT = BRUSHNET_ROOT / "examples/brushnet/proposed/DGAF_VSR_original/postprocess_eval.py"
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -36,6 +34,7 @@ def evaluate_root(
     evaluator_root: Path,
     output_name: str,
     overwrite: bool,
+    recursive: bool = False,
 ) -> None:
     eval_root = eval_root.expanduser().resolve()
     if not eval_root.is_dir():
@@ -49,7 +48,7 @@ def evaluate_root(
 
     selected = {}
     for kind in ("final", "gt"):
-        discovered = discover_sources(eval_root, kind, recursive=False)
+        discovered = discover_sources(eval_root, kind, recursive=recursive)
         selected[kind] = {
             sequence: select_unique_frames(candidates, "first")
             for sequence, candidates in discovered.items()
@@ -111,6 +110,7 @@ def evaluate_root(
             {
                 "eval_root": str(eval_root),
                 "selection": "first",
+                "recursive": recursive,
                 "sequences": sequences,
                 "unique_frame_count": sum(
                     len(frames) for frames in selected["final"].values()
@@ -130,6 +130,7 @@ def main() -> None:
     parser.add_argument("--evaluator-root", type=Path, default=DEFAULT_EVALUATOR_ROOT)
     parser.add_argument("--output-name", default="metrics_full_reference")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--recursive", action="store_true", help="Discover clips inside shard subdirectories")
     args = parser.parse_args()
 
     evaluator_root = args.evaluator_root.expanduser().resolve()
@@ -137,7 +138,7 @@ def main() -> None:
     if not checkpoint.is_file():
         raise FileNotFoundError(f"I3D checkpoint not found: {checkpoint}")
     for eval_root in args.eval_roots:
-        evaluate_root(eval_root, evaluator_root, args.output_name, args.overwrite)
+        evaluate_root(eval_root, evaluator_root, args.output_name, args.overwrite, args.recursive)
 
 
 if __name__ == "__main__":

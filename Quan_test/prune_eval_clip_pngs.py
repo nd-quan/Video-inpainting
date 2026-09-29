@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence, Set, Tuple
@@ -41,6 +43,8 @@ def parse_args() -> argparse.Namespace:
                         help="Choose middle clips for every sequence, overriding the legacy BasketballPass ranges.")
     parser.add_argument("--remove_empty_image_dirs", action="store_true",
                         help="Remove empty immediate image folders after deleting their PNGs.")
+    parser.add_argument("--remove_empty_clip_dirs", action="store_true",
+                        help="Archive metadata and remove clip folders that no longer contain PNGs.")
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -153,7 +157,8 @@ def describe_kept(root: Path, kept_clips: Set[Path], kept_kinds: Set[str] = KEPT
 
 def process_root(root: Path, apply: bool, recursive: bool = False,
                  kept_kinds: Set[str] = KEPT_KINDS, middle_all: bool = False,
-                 remove_empty_image_dirs: bool = False) -> None:
+                 remove_empty_image_dirs: bool = False,
+                 remove_empty_clip_dirs: bool = False) -> None:
     root = root.expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"Evaluation root not found: {root}")
@@ -176,6 +181,7 @@ def process_root(root: Path, apply: bool, recursive: bool = False,
         "recursive": recursive,
         "middle_all": middle_all,
         "remove_empty_image_dirs": remove_empty_image_dirs,
+        "remove_empty_clip_dirs": remove_empty_clip_dirs,
         "retained_png_count": len(retain_paths),
         "deleted_png_count": len(delete_paths),
         "deleted_bytes": sum(path.stat().st_size for path in delete_paths),
@@ -200,6 +206,35 @@ def process_root(root: Path, apply: bool, recursive: bool = False,
                 path.rmdir()
                 removed_dirs += 1
         print(f"Removed {removed_dirs} empty image folders in {root}")
+    if remove_empty_clip_dirs:
+        removable_clips = [clip.path for clip in clips if not any(clip.path.rglob("*.png"))]
+        for clip_path in removable_clips:
+            if clip_path.is_symlink():
+                raise ValueError(f"Refusing symlinked clip folder: {clip_path}")
+            clip_path.resolve().relative_to(root)
+        if removable_clips:
+            archive_path = root / "pruned_clip_metadata.tar.gz"
+            if archive_path.exists():
+                raise FileExistsError(f"Metadata archive already exists: {archive_path}")
+            temporary_archive = archive_path.with_suffix(".tmp.tar.gz")
+            archived_paths = []
+            with tarfile.open(temporary_archive, "w:gz") as archive:
+                for clip_path in removable_clips:
+                    for path in sorted(clip_path.rglob("*")):
+                        if path.is_symlink():
+                            raise ValueError(f"Refusing symlink in clip folder: {path}")
+                        if path.is_file():
+                            if path.suffix.lower() == ".png":
+                                raise RuntimeError(f"Refusing to remove clip containing PNGs: {clip_path}")
+                            archive.add(path, arcname=str(path.relative_to(root)), recursive=False)
+                            archived_paths.append(str(path.relative_to(root)))
+            with tarfile.open(temporary_archive, "r:gz") as archive:
+                if sorted(member.name for member in archive.getmembers() if member.isfile()) != archived_paths:
+                    raise RuntimeError(f"Metadata archive verification failed: {temporary_archive}")
+            temporary_archive.replace(archive_path)
+            for clip_path in removable_clips:
+                shutil.rmtree(clip_path)
+            print(f"Archived {len(archived_paths)} metadata files and removed {len(removable_clips)} PNG-free clip folders in {root}")
     print(f"Deleted {len(delete_paths)} PNGs; retained {len(retain_paths)} PNGs in {root}")
 
 
@@ -207,8 +242,9 @@ def main() -> None:
     args = parse_args()
     for root in args.eval_roots:
         process_root(root, args.apply, recursive=args.recursive,
-                     kept_kinds=frozenset(args.keep_kinds), middle_all=args.middle_all,
-                     remove_empty_image_dirs=args.remove_empty_image_dirs)
+                    kept_kinds=frozenset(args.keep_kinds), middle_all=args.middle_all,
+                    remove_empty_image_dirs=args.remove_empty_image_dirs,
+                    remove_empty_clip_dirs=args.remove_empty_clip_dirs)
 
 
 if __name__ == "__main__":
