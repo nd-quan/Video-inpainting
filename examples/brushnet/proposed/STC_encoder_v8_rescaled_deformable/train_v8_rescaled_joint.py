@@ -13,6 +13,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -31,6 +32,7 @@ from STC_encoder_v8_raft_deformable.raft_flow_provider import (
     FrozenV7RAFTFlowProvider,
     resolve_raft_student_component,
 )
+from STC_encoder_v8_raft_deformable.oracle_teacher_flow import OracleTeacherFlowCache
 from STC_encoder_v8_rescaled_deformable.rescaled_raft_deformable_stc_adapter import (
     RescaledRAFTGuidedDeformableBGSTCAdapter,
     augment_brushnet_condition_v8_rescaled,
@@ -41,6 +43,7 @@ from STC_encoder_v8_rescaled_deformable.temporal_training_loss import (
 
 
 EXPERIMENT_NAME = "rgb_stc_v8_rescaled_prewarp_joint"
+_TEACHER_CONDITION_CACHE = None
 DEFAULT_OUTPUT = (
     trainer.REPO_ROOT
     / "experiments"
@@ -119,6 +122,10 @@ def _add_variant_arguments(parser) -> None:
         help="Frozen V7 ProPainter-RAFT student component or best/latest pointer.",
     )
     parser.add_argument("--raft_pair_batch_size", type=int, default=1)
+    parser.add_argument(
+        "--condition_flow_source", choices=("student", "teacher"), default="student",
+        help="Flow supplied to the V8-R condition for current and predecessor clips.",
+    )
     parser.add_argument(
         "--raft_mixed_precision",
         dest="raft_mixed_precision",
@@ -259,6 +266,49 @@ def _resolved_initialization(args) -> str:
     return str(v8.resolve_complete_component(args.init_v8_model, "stc_v8_model"))
 
 
+def _augment_extra_kwargs(*, batch, device, num_clips, num_frames, resolution):
+    """Keep the student path unchanged; use cached clean flow in teacher mode."""
+    global _TEACHER_CONDITION_CACHE
+    if _ACTIVE_ARGS.condition_flow_source == "student":
+        return v8._augment_extra_kwargs(
+            batch=batch, device=device, num_clips=num_clips,
+            num_frames=num_frames, resolution=resolution,
+        )
+    values = v5._augment_extra_kwargs(
+        batch=batch, device=device, num_clips=num_clips,
+        num_frames=num_frames, resolution=resolution,
+    )
+    if _TEACHER_CONDITION_CACHE is None:
+        _TEACHER_CONDITION_CACHE = OracleTeacherFlowCache(
+            _ACTIVE_ARGS.teacher_flow_root, _ACTIVE_ARGS.train_split, resolution
+        )
+    shape = (num_clips, num_frames - 1, 2, resolution, resolution)
+    current_forward = batch["teacher_flow_forward"].to(device=device, dtype=torch.float32, non_blocking=True)
+    current_backward = batch["teacher_flow_backward"].to(device=device, dtype=torch.float32, non_blocking=True)
+    if tuple(current_forward.shape) != shape or tuple(current_backward.shape) != shape:
+        raise ValueError(f"Teacher condition flow shape must be {shape}")
+    previous_forward, previous_backward = [], []
+    for index in range(num_clips):
+        if bool(batch["previous_valid_mask"][index].any()):
+            prediction = _TEACHER_CONDITION_CACHE.sequence(
+                batch["previous_videos"][index], batch["previous_frame_ids"][index], device
+            )
+            previous_forward.append(prediction.forward[0])
+            previous_backward.append(prediction.backward[0])
+        else:
+            previous_forward.append(torch.zeros(shape[1:], device=device))
+            previous_backward.append(torch.zeros(shape[1:], device=device))
+    values.update(
+        raft_flow_provider=None,
+        external_current_flow=SimpleNamespace(forward=current_forward, backward=current_backward),
+        external_previous_flow=SimpleNamespace(
+            forward=torch.stack(previous_forward),
+            backward=torch.stack(previous_backward),
+        ),
+    )
+    return values
+
+
 def _build_temporal_training_loss(
     *,
     model_prediction,
@@ -327,7 +377,12 @@ def _checkpoint_metadata(args, accelerator, global_step, epoch, next_batch_index
             "deform_alignment_warmup_steps": args.deform_alignment_warmup_steps,
             "deform_offset_loss_weight": args.deform_offset_loss_weight,
             "reset_deformable_branch": args.reset_deformable_branch,
-            "v7_raft_flow_frozen": True,
+            "v7_raft_flow_frozen": args.condition_flow_source == "student",
+            "condition_flow_source": args.condition_flow_source,
+            "condition_flow_input": (
+                "clean_GT_teacher_cache" if args.condition_flow_source == "teacher"
+                else "degraded_RGB_V7_student"
+            ),
             "v7_raft_student_component": str(
                 resolve_raft_student_component(args.raft_student_path)
             ),
@@ -376,6 +431,7 @@ def _resume_contract(args):
             "v7_raft_student_component": str(
                 resolve_raft_student_component(args.raft_student_path)
             ),
+            "condition_flow_source": args.condition_flow_source,
             "v7_raft_architecture": "propainter_raft_large",
             "v7_raft_pair_batch_size": args.raft_pair_batch_size,
             "v7_raft_mixed_precision": args.raft_mixed_precision,
@@ -407,7 +463,7 @@ def _install_variant() -> None:
     trainer.BEFORE_OPTIMIZER_STEP_FN = _before_optimizer_step
     trainer.ADD_VARIANT_ARGUMENTS_FN = _add_variant_arguments
     trainer.MODEL_FACTORY_FN = _model_factory
-    trainer.AUGMENT_EXTRA_KWARGS_FN = v8._augment_extra_kwargs
+    trainer.AUGMENT_EXTRA_KWARGS_FN = _augment_extra_kwargs
     trainer.EXTRA_TRAIN_METRICS_FN = v8._extra_train_metrics
     trainer.POST_DATASET_VALIDATION_FN = v5._post_dataset_validation
     trainer.TRAIN_DATALOADER_DROP_LAST = True
@@ -428,7 +484,7 @@ def _install_variant() -> None:
 
 
 def parse_args(input_args=None):
-    global _ACTIVE_ARGS
+    global _ACTIVE_ARGS, _TEACHER_CONDITION_CACHE
     _install_variant()
     argv = list(sys.argv[1:] if input_args is None else input_args)
     args = trainer.parse_args(v8._rewrite_zero_flow_loss(argv))
@@ -492,6 +548,11 @@ def parse_args(input_args=None):
         raise ValueError("First V8-R run requires feature_alignment_loss_weight=0")
     v8._ACTIVE_ARGS = args
     _ACTIVE_ARGS = args
+    _TEACHER_CONDITION_CACHE = None
+    if args.condition_flow_source == "teacher":
+        trainer.TRAINING_LOG_TITLE = (
+            "V8-R joint: cached clean teacher flow + xS pre-warp + geometric-only native DCN"
+        )
     return args
 
 
@@ -513,7 +574,8 @@ def run_preflight(args) -> None:
         "initialization_component": _resolved_initialization(args),
         "v7_raft_student_component": args.raft_student_path,
         "v7_raft_architecture": "propainter_raft_large",
-        "v7_raft_frozen": True,
+        "v7_raft_frozen": args.condition_flow_source == "student",
+        "condition_flow_source": args.condition_flow_source,
         "rescaled_warp_scale": args.rescaled_warp_scale,
         "rescaled_warp_path": "RGB flow -> xS grid (direct); up -> warp -> down",
         "dcn_source": "rescaled prewarped spatial feature",

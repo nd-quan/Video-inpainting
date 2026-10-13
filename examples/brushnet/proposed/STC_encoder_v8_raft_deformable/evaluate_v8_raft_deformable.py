@@ -45,6 +45,8 @@ def _add_evaluation_arguments(parser) -> None:
                         help="Override checkpoint DCN direction for ablation; default inherits checkpoint.")
     parser.add_argument("--raft_student_path", required=True)
     parser.add_argument("--raft_pair_batch_size", type=int, default=1)
+    parser.add_argument("--raft_max_side", type=int, default=0,
+                        help="Maximum RAFT input side; 0 keeps native flow resolution")
     parser.add_argument(
         "--raft_mixed_precision",
         dest="raft_mixed_precision",
@@ -60,7 +62,8 @@ def _add_evaluation_arguments(parser) -> None:
 
 def _provider(args, device: torch.device) -> FrozenV7RAFTFlowProvider:
     component = resolve_raft_student_component(args.raft_student_path)
-    key = "|".join((str(device), str(component), str(args.raft_pair_batch_size), str(args.raft_mixed_precision)))
+    key = "|".join((str(device), str(component), str(args.raft_pair_batch_size),
+                    str(args.raft_mixed_precision), str(args.raft_max_side)))
     provider = _PROVIDER_BY_DEVICE.get(key)
     if provider is None:
         provider = FrozenV7RAFTFlowProvider(
@@ -68,6 +71,7 @@ def _provider(args, device: torch.device) -> FrozenV7RAFTFlowProvider:
             device=device,
             pair_batch_size=args.raft_pair_batch_size,
             mixed_precision=args.raft_mixed_precision,
+            max_input_side=args.raft_max_side,
         )
         _PROVIDER_BY_DEVICE[key] = provider
     return provider
@@ -79,6 +83,8 @@ def preflight(args):
         raise ValueError("deformable_alignment_scale must be non-negative")
     if args.raft_pair_batch_size < 1:
         raise ValueError("raft_pair_batch_size must be positive")
+    if args.raft_max_side < 0:
+        raise ValueError("raft_max_side must be nonnegative")
     args.raft_student_path = str(resolve_raft_student_component(args.raft_student_path))
     _ACTIVE_EVAL_ARGS = args
     v5_evaluator.RelativeCrossClipBGSTCAdapter = RAFTGuidedDeformableBGSTCAdapter
@@ -201,6 +207,9 @@ def build_v8_condition(
         output.residual_offset_backward.detach().float().flatten(),
         output.residual_offset_forward.detach().float().flatten(),
     )).abs()
+    # torch.quantile rejects very large CUDA tensors in this PyTorch version.
+    # This value is diagnostic only, so sample uniformly when the tensor grows.
+    offset_sample_stride = max(1, (offsets.numel() + 999_999) // 1_000_000)
     masks = torch.cat((
         output.modulation_mask_backward.detach().float().flatten(),
         output.modulation_mask_forward.detach().float().flatten(),
@@ -227,7 +236,7 @@ def build_v8_condition(
         "cross_clip_gate_abs_mean": float(output.cross_clip_gate_abs_mean),
         "deformable_alignment_scale": float(deformable_alignment_scale),
         "deform_offset_abs_mean": float(offsets.mean()) if offsets.numel() else 0.0,
-        "deform_offset_abs_p95": float(torch.quantile(offsets, 0.95)) if offsets.numel() else 0.0,
+        "deform_offset_abs_p95": float(torch.quantile(offsets[::offset_sample_stride], 0.95)) if offsets.numel() else 0.0,
         "deform_mask_mean": float(masks.mean()) if masks.numel() else 0.0,
         "deform_mask_saturation": float(((masks < 0.05) | (masks > 0.95)).float().mean()) if masks.numel() else 0.0,
         "deform_reliability_backward": float(output.deform_reliability_backward.detach().float().mean()),

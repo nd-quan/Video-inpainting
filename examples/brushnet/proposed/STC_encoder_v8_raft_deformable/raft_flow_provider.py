@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Tuple, Union
 
 import torch
+import torch.nn.functional as F
 
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -68,6 +69,7 @@ class FrozenV7RAFTFlowProvider:
         device: Union[str, torch.device],
         pair_batch_size: int = 1,
         mixed_precision: bool = True,
+        max_input_side: int = 0,
     ):
         self.raft_student_path = resolve_raft_student_component(raft_student_path)
         self.device = torch.device(device)
@@ -81,6 +83,9 @@ class FrozenV7RAFTFlowProvider:
         if int(pair_batch_size) < 1:
             raise ValueError("pair_batch_size must be positive")
         self.pair_batch_size = int(pair_batch_size)
+        self.max_input_side = int(max_input_side)
+        if self.max_input_side and self.max_input_side < 8:
+            raise ValueError("max_input_side must be zero or at least eight")
         config = json.loads(
             (self.raft_student_path / "config.json").read_text(encoding="utf-8")
         )
@@ -116,6 +121,7 @@ class FrozenV7RAFTFlowProvider:
             "raft_input_normalization": config.get("input_normalization"),
             "flow_convention": config.get("flow_convention"),
             "pair_batch_size": self.pair_batch_size,
+            "max_input_side": self.max_input_side,
             "frozen": True,
         }
 
@@ -151,6 +157,13 @@ class FrozenV7RAFTFlowProvider:
             return V7RAFTFlowOutput(empty, empty)
         frame0 = rgb_sequence[:, :-1].reshape(-1, 3, height, width).float()
         frame1 = rgb_sequence[:, 1:].reshape(-1, 3, height, width).float()
+        flow_height, flow_width = height, width
+        if self.max_input_side and max(height, width) > self.max_input_side:
+            scale = self.max_input_side / max(height, width)
+            flow_height = max(8, round(height * scale / 8) * 8)
+            flow_width = max(8, round(width * scale / 8) * 8)
+            frame0 = F.interpolate(frame0, size=(flow_height, flow_width), mode="bilinear", align_corners=False)
+            frame1 = F.interpolate(frame1, size=(flow_height, flow_width), mode="bilinear", align_corners=False)
         # Retain fixed BatchNorm statistics even when the surrounding STC is in
         # ``train`` mode.  No gradient path is created through frozen V7.
         self.student.eval()
@@ -161,8 +174,16 @@ class FrozenV7RAFTFlowProvider:
             pair_batch_size=self.pair_batch_size,
         )
         pairs = frames - 1
-        forward = forward.reshape(batch, pairs, 2, height, width).detach().float()
-        backward = backward.reshape(batch, pairs, 2, height, width).detach().float()
+        def restore_flow(flow: torch.Tensor) -> torch.Tensor:
+            flow = flow.reshape(batch * pairs, 2, flow_height, flow_width).detach().float()
+            if (flow_height, flow_width) != (height, width):
+                flow = F.interpolate(flow, size=(height, width), mode="bilinear", align_corners=False)
+                flow[:, 0].mul_(width / flow_width)
+                flow[:, 1].mul_(height / flow_height)
+            return flow.reshape(batch, pairs, 2, height, width)
+
+        forward = restore_flow(forward)
+        backward = restore_flow(backward)
         if not torch.isfinite(forward).all() or not torch.isfinite(backward).all():
             raise FloatingPointError("Frozen V7 RAFT produced non-finite flow")
         return V7RAFTFlowOutput(forward, backward)

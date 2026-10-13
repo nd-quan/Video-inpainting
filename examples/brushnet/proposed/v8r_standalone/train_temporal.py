@@ -8,6 +8,7 @@ metrics and checkpoint contract are replaced here. No legacy flow head runs.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from STC_encoder_v8_raft_deformable.raft_flow_provider import resolve_raft_stude
 from STC_encoder_v8_rescaled_deformable import train_v8_rescaled_joint as legacy
 from v8r_standalone.migration import initialize_from_legacy, resolve_component
 from v8r_standalone.model import StandaloneV8RAdapter, augment_brushnet_condition
+from flow_refinement.provider import install_v8r_provider
 
 _BASE_METADATA = trainer.checkpoint_metadata
 _BASE_CONTRACT = trainer._resume_contract
@@ -99,6 +101,7 @@ def metadata(args, accelerator, global_step, epoch, next_batch_index):
                    "raft_student_component": str(resolve_raft_student_component(args.raft_student_path)),
                    "joint_unfreeze_step": args.joint_unfreeze_step,
                    "rescaled_warp_scale": args.rescaled_warp_scale})
+    result["flow_refiner_checkpoint"] = os.environ.get("V8R_FLOW_REFINER_PATH", "")
     return result
 
 
@@ -109,11 +112,13 @@ def resume_contract(args):
                    "raft_student_component": str(resolve_raft_student_component(args.raft_student_path)),
                    "rescaled_warp_scale": args.rescaled_warp_scale,
                    "joint_unfreeze_step": args.joint_unfreeze_step})
+    result["flow_refiner_checkpoint"] = os.environ.get("V8R_FLOW_REFINER_PATH", "")
     return result
 
 
 def install():
     legacy._install_variant()
+    install_v8r_provider(v8)
     trainer.REPO_ROOT = REPO
     trainer.DEFAULT_OUTPUT = REPO / "experiments" / "train_v8r_standalone"
     trainer.EXPERIMENT_NAME = "v8r_standalone"

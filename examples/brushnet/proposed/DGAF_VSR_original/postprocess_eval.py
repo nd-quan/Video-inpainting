@@ -23,6 +23,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--eval_root', type=Path, required=True)
     p.add_argument('--evaluator_root', type=Path, default=ROOT.parent / 'video-inpainting-evaluation')
+    p.add_argument('--skip_warping', action='store_true',
+                   help='Omit WE and WE_L2 calculations and output columns.')
     args = p.parse_args()
     sys.path.insert(0, str(args.evaluator_root))
     from src.fid.util import extract_video_clip_features
@@ -44,7 +46,9 @@ def main():
             ids = meta['frame_ids']
             pred_paths = [manifest.parent / 'final' / f'{i:06d}.png' for i in ids]
             gt_paths = [manifest.parent / 'gt' / f'{i:06d}.png' for i in ids]
-            scores = {k: [] for k in ('PSNR', 'SSIM', 'LPIPS', 'WE', 'WE_L2', 'FS')}
+            score_names = (('PSNR', 'SSIM', 'LPIPS', 'FS') if args.skip_warping
+                           else ('PSNR', 'SSIM', 'LPIPS', 'WE', 'WE_L2', 'FS'))
+            scores = {k: [] for k in score_names}
             prev = None
             for pred_path, gt_path in zip(pred_paths, gt_paths):
                 with Image.open(pred_path) as im: pred = np.array(im.convert('RGB'))
@@ -56,9 +60,10 @@ def main():
                 scores['LPIPS'].append(perceptual(a * 2 - 1, b * 2 - 1).item())
                 cur = pred.astype(np.float32) / 255
                 if prev is not None:
-                    l1, l2 = warping_error(prev, cur)
-                    scores['WE'].append(l1)
-                    scores['WE_L2'].append(l2)
+                    if not args.skip_warping:
+                        l1, l2 = warping_error(prev, cur)
+                        scores['WE'].append(l1)
+                        scores['WE_L2'].append(l2)
                     scores['FS'].append(frame_ssim(prev, cur))
                 prev = cur
             features = []
@@ -87,7 +92,9 @@ def main():
     (out / 'metrics.json').write_text(json.dumps({'definitions': {
         'scope': 'full-frame final vs GT at evaluator resolution, before video encoding',
         'PSNR': 'RGB uint8; frame mean; higher is better', 'SSIM': 'torchmetrics SSIM data_range=1; higher is better',
-        'LPIPS': 'AlexNet; lower is better', 'WE': 'backward Farneback warped adjacent final frames, valid-pixel RGB L1 in [0,1]; lower is better',
+        'LPIPS': 'AlexNet; lower is better',
+        **({} if args.skip_warping else {'WE': 'backward Farneback warped adjacent final frames, valid-pixel RGB L1 in [0,1]; lower is better',
+                                         'WE_L2': 'squared L2 warping error on adjacent final frames; lower is better'}),
         'FS': 'adjacent final-frame SSIM from Quan_test/evaluate_temporal_metrics.py; higher is better',
         'VFID_Clips': 'I3D rgb_imagenet, 10-frame sliding windows, stride 1, 224x224 bicubic, empirical Frechet; lower is better',
         'aggregation': 'frame-weighted image metrics; pair-weighted temporal metrics; pooled VFID features'}, 'results': rows}, indent=2))

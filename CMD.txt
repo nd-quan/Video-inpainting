@@ -54,11 +54,6 @@ rsync -ah \
   ~/ndquan/videoInpainting/code/BrushNet/examples/checkpoint_brushnet/checkpoint_naeun/checkpoint-200000
 
 
-
-
-**Check gpu realtime
-watch -n 1 nvidia-smi
-
 ** check cpu real time
 htop
 
@@ -92,3 +87,15 @@ SHARED_BG_NOISE_STRENGTH=0.95 \
 OUTPUT_DIR=/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/train_sharedNoise_sameBG_0.95 \
 bash examples/brushnet/run_train_brushnet_VCM_ipadapter_v8_coco_nulltext_sharedNoise_sameBG_v0_0.sh \
 2>&1 | tee -a /home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/train_sharedNoise_sameBG_0.95/terminal_logs/train_$(date +%Y%m%d_%H%M%S).log
+
+
+-- send file/folder from local pc to vcm15
+scp -P 5005 "D:\CILAB\3.Report\2.Weekly\23_Cilab_NguyenDinhQuan.pdf" cilab@localhost:/home/cilab/ndquan/
+
+** copy from ws to vcm
+scp -P 1004 -r ndquan@223.195.240.65:/media/hdd1/ndquan/datasets/BVI_DVC/BVI-DVC-Part1-selected/1920x1088 /home/cilab/ndquan/datasets/BVI-DVC/BVI-DVC-Part1-selected/new/
+
+** sync from ws to vcm 
+rsync -avh --progress -e 'ssh -p 1004' \
+  ndquan@223.195.240.65:/media/hdd1/ndquan/datasets/BVI_DVC/BVI-DVC-Part1-selected/1920x1088/ \
+  /home/cilab/ndquan/datasets/BVI-DVC/BVI-DVC-Part1-selected/new/1920x1088/

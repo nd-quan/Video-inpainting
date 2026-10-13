@@ -11,7 +11,7 @@ import tempfile
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-METRIC_SCRIPT = ROOT / 'examples/brushnet/DGAF_VSR_original/postprocess_eval.py'
+METRIC_SCRIPT = ROOT / 'examples/brushnet/proposed/DGAF_VSR_original/postprocess_eval.py'
 
 
 def main():

@@ -70,14 +70,18 @@ class RAFTTeacherFlowPairDataset(Dataset):
         resolution: int = 512,
         include_branches: Optional[Sequence[str]] = None,
         validate_files: bool = True,
+        spatial_mode: str = "square",
     ):
         self.dataset_root = Path(dataset_root).expanduser().resolve()
         self.teacher_flow_root = Path(teacher_flow_root).expanduser().resolve()
         self.split = str(split)
         self.resolution = int(resolution)
+        self.spatial_mode = str(spatial_mode)
         self.include_branches = _normalize_branches(include_branches)
         if self.resolution < 8 or self.resolution % 8:
             raise ValueError("resolution must be a positive multiple of 8")
+        if self.spatial_mode not in {"square", "native"}:
+            raise ValueError("spatial_mode must be 'square' or 'native'")
         if self.split not in {"train", "valid", "test"}:
             raise ValueError(f"Unknown split {self.split!r}")
         metadata_path = self.teacher_flow_root / "metadata.json"
@@ -134,17 +138,25 @@ class RAFTTeacherFlowPairDataset(Dataset):
 
     def _rgb(self, path: Path) -> torch.Tensor:
         with Image.open(path) as image:
-            image = image.convert("RGB").resize(
-                (self.resolution, self.resolution), resample=Image.Resampling.BILINEAR
-            )
+            image = image.convert("RGB")
+            if self.spatial_mode == "square":
+                image = image.resize(
+                    (self.resolution, self.resolution), resample=Image.Resampling.BILINEAR
+                )
+            elif image.width % 8 or image.height % 8:
+                raise ValueError(f"Native RAFT frame must be divisible by 8: {path} ({image.size})")
             array = np.asarray(image, dtype=np.float32)
         return torch.from_numpy(np.ascontiguousarray(array.transpose(2, 0, 1))).div_(127.5).sub_(1.0)
 
     def _bg_mask(self, path: Path) -> torch.Tensor:
         with Image.open(path) as image:
-            image = image.convert("L").resize(
-                (self.resolution, self.resolution), resample=Image.Resampling.NEAREST
-            )
+            image = image.convert("L")
+            if self.spatial_mode == "square":
+                image = image.resize(
+                    (self.resolution, self.resolution), resample=Image.Resampling.NEAREST
+                )
+            elif image.width % 8 or image.height % 8:
+                raise ValueError(f"Native RAFT mask must be divisible by 8: {path} ({image.size})")
             roi = np.asarray(image, dtype=np.uint8) >= 128
         return torch.from_numpy(np.ascontiguousarray((~roi).astype(np.float32)[None]))
 
@@ -167,11 +179,20 @@ class RAFTTeacherFlowPairDataset(Dataset):
         input_root = self.dataset_root / self.split / "input" / Path(branch)
         mask_root = self.dataset_root / self.split / "mask" / Path(branch)
         teacher_f, teacher_b, valid_f, valid_b = self._teacher(cache_path)
+        degraded0 = self._rgb(input_root / f"{index0:06d}.png")
+        degraded1 = self._rgb(input_root / f"{index1:06d}.png")
+        bg0 = self._bg_mask(mask_root / f"{index0:06d}.png")
+        bg1 = self._bg_mask(mask_root / f"{index1:06d}.png")
+        expected = degraded0.shape[-2:]
+        if degraded1.shape[-2:] != expected or bg0.shape[-2:] != expected or bg1.shape[-2:] != expected:
+            raise ValueError(f"Frame/mask shapes differ for {branch} {index0}->{index1}")
+        if any(tensor.shape[-2:] != expected for tensor in (teacher_f, teacher_b, valid_f, valid_b)):
+            raise ValueError(f"Teacher cache shape differs from RGB {expected}: {cache_path}")
         return {
-            "degraded0": self._rgb(input_root / f"{index0:06d}.png"),
-            "degraded1": self._rgb(input_root / f"{index1:06d}.png"),
-            "bg0": self._bg_mask(mask_root / f"{index0:06d}.png"),
-            "bg1": self._bg_mask(mask_root / f"{index1:06d}.png"),
+            "degraded0": degraded0,
+            "degraded1": degraded1,
+            "bg0": bg0,
+            "bg1": bg1,
             "teacher_forward": teacher_f,
             "teacher_backward": teacher_b,
             "valid_forward": valid_f,

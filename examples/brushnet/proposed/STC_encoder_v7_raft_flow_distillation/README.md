@@ -24,6 +24,17 @@ spatial resize and displacement scaling.
 
 ## Training
 
+For a native-resolution memory check, `--spatial_mode native` keeps the source
+height and width instead of resizing to a square. The current native loader
+requires both dimensions to be divisible by eight. `--memory_probe` executes
+the requested training steps, including bidirectional RAFT and backward, and
+prints peak allocated/reserved CUDA memory for every rank without validation
+or checkpoints. Teacher flow must have exactly the same spatial shape.
+
+`queue_native_2560_oom_probe.py` prepares a small Traffic 2560x1600 run after
+GPUs 1 and 2 have both been idle for three checks. Its status and logs are in
+`experiments/v7_student_native_2560_oom_probe/`.
+
 ```bash
 cd /home/cilab/ndquan/videoInpainting/code/BrushNet
 

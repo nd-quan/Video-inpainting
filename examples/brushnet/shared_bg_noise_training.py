@@ -248,7 +248,7 @@ class HierarchicalV8ClipDataset(Dataset):
         clip_image_processor,
         clip_length: int = 4,
         stride: int = 1,
-        resolution: int = 512,
+        resolution: Optional[int] = 512,
         include_branches: Optional[Sequence[str]] = None,
     ):
         self.dataset_root = Path(dataset_root).expanduser().resolve()
@@ -256,14 +256,15 @@ class HierarchicalV8ClipDataset(Dataset):
         self.split_root = self.dataset_root / self.split
         self.clip_length = int(clip_length)
         self.stride = int(stride)
-        self.resolution = int(resolution)
+        self.resolution = None if resolution is None else int(resolution)
+        self._native_size_by_video: Dict[str, Tuple[int, int]] = {}
         self.clip_image_processor = clip_image_processor
         self.include_branches = self._normalize_include_branches(include_branches)
         if self.clip_length < 2:
             raise ValueError("clip_length must be at least 2 for shared noise")
         if self.stride <= 0:
             raise ValueError("clip stride must be positive")
-        if self.resolution <= 0:
+        if self.resolution is not None and self.resolution <= 0:
             raise ValueError("resolution must be positive")
 
         self.roots = {
@@ -414,18 +415,35 @@ class HierarchicalV8ClipDataset(Dataset):
         return images
 
     def _rgb_tensor(self, image: Image.Image) -> torch.Tensor:
-        resized = image.resize(
-            (self.resolution, self.resolution), resample=self._rgb_resample
-        )
-        array = np.asarray(resized, dtype=np.float32)
+        if self.resolution is None:
+            array = np.asarray(image, dtype=np.float32)
+            height, width = array.shape[:2]
+            array = np.pad(
+                array,
+                ((0, -height % 8), (0, -width % 8), (0, 0)),
+                mode="edge",
+            )
+        else:
+            resized = image.resize(
+                (self.resolution, self.resolution), resample=self._rgb_resample
+            )
+            array = np.asarray(resized, dtype=np.float32)
         array = np.ascontiguousarray(array.transpose(2, 0, 1))
         return torch.from_numpy(array).div_(127.5).sub_(1.0)
 
     def _bg_mask_tensor(self, image: Image.Image) -> torch.Tensor:
-        resized = image.resize(
-            (self.resolution, self.resolution), resample=self._mask_resample
-        )
-        roi = np.asarray(resized, dtype=np.uint8) >= 128
+        if self.resolution is None:
+            array = np.asarray(image, dtype=np.uint8)
+            height, width = array.shape
+            array = np.pad(
+                array, ((0, -height % 8), (0, -width % 8)), mode="edge"
+            )
+        else:
+            resized = image.resize(
+                (self.resolution, self.resolution), resample=self._mask_resample
+            )
+            array = np.asarray(resized, dtype=np.uint8)
+        roi = array >= 128
         bg = np.ascontiguousarray((~roi).astype(np.float32)[None])
         return torch.from_numpy(bg)
 
@@ -455,6 +473,19 @@ class HierarchicalV8ClipDataset(Dataset):
         gt_images = self._load_images(relative_paths, "GT", "RGB")
         decoded_images = self._load_images(relative_paths, "input", "RGB")
         mask_images = self._load_images(relative_paths, "mask", "L")
+        original_size = None
+        if self.resolution is None:
+            sizes = {image.size for image in (*gt_images, *decoded_images, *mask_images)}
+            if len(sizes) != 1:
+                raise ValueError(f"GT/input/mask dimensions differ in {branch}: {sizes}")
+            width, height = sizes.pop()
+            original_size = (height, width)
+            previous_size = self._native_size_by_video.setdefault(branch, original_size)
+            if previous_size != original_size:
+                raise ValueError(
+                    f"Frame dimensions changed within {branch}: "
+                    f"{previous_size} -> {original_size}"
+                )
         historical_fg, historical_bg = self._masked_clip_images(
             decoded_images, mask_images
         )
@@ -481,6 +512,10 @@ class HierarchicalV8ClipDataset(Dataset):
             "video": branch,
             "frame_ids": torch.tensor(frame_indices, dtype=torch.long),
         }
+        if original_size is not None:
+            height, width = original_size
+            sample["original_size"] = original_size
+            sample["padded_size"] = (height + (-height % 8), width + (-width % 8))
         return sample
 
 
@@ -510,7 +545,7 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
         clip_image_processor,
         clip_length: int = 4,
         stride: int = 1,
-        resolution: int = 512,
+        resolution: Optional[int] = 512,
         include_branches: Optional[Sequence[str]] = None,
     ):
         self.dataset_root = Path(dataset_root).expanduser().resolve()
@@ -518,7 +553,8 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
         self.split_root = self.dataset_root
         self.clip_length = int(clip_length)
         self.stride = int(stride)
-        self.resolution = int(resolution)
+        self.resolution = None if resolution is None else int(resolution)
+        self._native_size_by_video: Dict[str, Tuple[int, int]] = {}
         self.clip_image_processor = clip_image_processor
         requested_sequences = []
         for raw_sequence in include_branches or ():
@@ -537,7 +573,7 @@ class FlatV8TestClipDataset(HierarchicalV8ClipDataset):
             raise ValueError("clip_length must be at least 2 for shared noise")
         if self.stride <= 0:
             raise ValueError("clip stride must be positive")
-        if self.resolution <= 0:
+        if self.resolution is not None and self.resolution <= 0:
             raise ValueError("resolution must be positive")
         if not self.dataset_root.is_dir():
             raise FileNotFoundError(

@@ -115,6 +115,12 @@ FEATURE_ALIGNMENT_LOSS_FN: Optional[Callable] = None
 ADD_VARIANT_ARGUMENTS_FN: Optional[Callable] = None
 MODEL_FACTORY_FN: Optional[Callable] = None
 AUGMENT_EXTRA_KWARGS_FN: Optional[Callable] = None
+PRE_AUGMENT_FN: Optional[Callable] = None
+# Optional replacement for the frozen BrushNet -> diffusion U-Net call. A
+# feature-port variant receives the STC output here while the default path
+# remains byte-for-byte identical for existing experiments.
+PREDICT_FN: Optional[Callable] = None
+ALLOW_ZERO_FLOW_LOSS_WEIGHT = False
 EXTRA_TRAIN_METRICS_FN: Optional[Callable] = None
 # Optional differentiable variant loss.  The callable runs before backward and
 # returns an object exposing ``loss`` plus an optional ``metrics`` mapping.
@@ -302,8 +308,14 @@ def parse_args(input_args=None):
         parser.error("--shared_bg_noise_strength must be in [0,1]")
     if not 0.0 < args.shared_bg_mask_threshold <= 1.0:
         parser.error("--shared_bg_mask_threshold must be in (0,1]")
-    if args.flow_loss_weight <= 0.0 or not math.isfinite(args.flow_loss_weight):
-        parser.error("--flow_loss_weight must be finite and positive")
+    invalid_flow_weight = (
+        args.flow_loss_weight < 0.0
+        if ALLOW_ZERO_FLOW_LOSS_WEIGHT
+        else args.flow_loss_weight <= 0.0
+    )
+    if invalid_flow_weight or not math.isfinite(args.flow_loss_weight):
+        expectation = "non-negative" if ALLOW_ZERO_FLOW_LOSS_WEIGHT else "positive"
+        parser.error(f"--flow_loss_weight must be finite and {expectation}")
     if args.flow_charbonnier_eps <= 0.0:
         parser.error("--flow_charbonnier_eps must be positive")
     if (
@@ -1118,6 +1130,15 @@ def main(args):
                             num_frames=num_frames,
                             resolution=args.resolution,
                         )
+                    if PRE_AUGMENT_FN is not None:
+                        augment_extra_kwargs.update(PRE_AUGMENT_FN(
+                            brushnet=brushnet,
+                            noisy_latents=noisy_latents,
+                            timesteps=timesteps,
+                            base_condition_latents=base_condition_latents,
+                            bg_mask_sequence=bg_mask_sequence,
+                            brushnet_text_hidden_states=brushnet_text,
+                        ))
                     brushnet_condition, stc_output, augmented_condition = (
                         augment_brushnet_condition(
                             model=model,
@@ -1137,7 +1158,7 @@ def main(args):
                         ):
                             raise RuntimeError("Fresh v3 must reproduce V8 condition")
                         fresh_zero_identity_checked = True
-                    model_prediction = frozen_v8_predict(
+                    prediction_kwargs = dict(
                         brushnet=brushnet,
                         unet=unet,
                         noisy_latents=noisy_latents,
@@ -1146,6 +1167,15 @@ def main(args):
                         brushnet_text_hidden_states=brushnet_text,
                         unet_hidden_states=unet_context,
                     )
+                    if PREDICT_FN is None:
+                        model_prediction = frozen_v8_predict(**prediction_kwargs)
+                    else:
+                        model_prediction = PREDICT_FN(
+                            model=model,
+                            stc_output=stc_output,
+                            args=args,
+                            **prediction_kwargs,
+                        )
                     if noise_scheduler.config.prediction_type == "epsilon":
                         target = noise
                     elif noise_scheduler.config.prediction_type == "v_prediction":

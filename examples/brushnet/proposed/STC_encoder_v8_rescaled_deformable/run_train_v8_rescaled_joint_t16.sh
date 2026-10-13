@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-BRUSHNET_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+BRUSHNET_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." && pwd)"
 TRAIN_SCRIPT="${SCRIPT_DIR}/train_v8_rescaled_joint.py"
 PYTHON_BIN="${PYTHON_BIN:-/home/cilab/ndquan/envs/guided_diff/bin/python}"
 ACCELERATE_BIN="${ACCELERATE_BIN:-/home/cilab/ndquan/envs/guided_diff/bin/accelerate}"

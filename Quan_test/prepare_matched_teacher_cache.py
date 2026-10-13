@@ -25,9 +25,17 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     (output / "build_report.json").unlink(missing_ok=True)
     source_metadata = json.loads((SOURCE / "metadata.json").read_text())
-    metadata = dict(source_metadata, source_cache=str(SOURCE),
-                    selection=("all pairs from reference flat GT" if args.all_from_flat_gt else
-                               "exact clips in RGB/latent reference; missing pairs from flat GT"))
+    metadata = dict(source_metadata)
+    metadata.update(
+        dataset_root=str(DATASET),
+        manifest=None,
+        reference_experiment=str(REFERENCE),
+        teacher_model_reference_cache=str(SOURCE),
+        format="npz teacher_f/teacher_b [2,512,512] float32 (no valid_f/valid_b)",
+        layout="matched/<class>/<sequence>/<frame0>_<frame1>.npz",
+        selection=("all pairs from reference flat GT" if args.all_from_flat_gt else
+                   "exact clips in RGB/latent reference; missing pairs from flat GT"),
+    )
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     missing = []
     reused = 0
@@ -95,7 +103,9 @@ def main():
         "estimated_this_invocation": len(missing),
         "total_pairs": len(list((output / "matched").glob("*/*/*.npz"))),
         "checkpoint": source_metadata["raft_checkpoint"],
-        "raft_sha256": source_metadata["raft_sha256"]}, indent=2) + "\n")
+        "raft_sha256": source_metadata["raft_sha256"],
+        "source": "flat reference GT at 512x512",
+        "flow_input": "clean GT", "teacher_is_oracle": True}, indent=2) + "\n")
 
 
 if __name__ == "__main__":

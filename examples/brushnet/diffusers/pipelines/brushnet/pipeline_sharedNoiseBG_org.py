@@ -862,6 +862,7 @@ class StableDiffusionBrushNetPipeline(
         return_dict: bool = True,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         brushnet_conditioning_scale: Union[float, List[float]] = 1.0,
+        denoising_batch_size: int = 0,
         guess_mode: bool = False,
         control_guidance_start: Union[float, List[float]] = 0.0,
         control_guidance_end: Union[float, List[float]] = 1.0,
@@ -1317,37 +1318,69 @@ class StableDiffusionBrushNetPipeline(
                         brushnet_cond_scale = brushnet_cond_scale[0]
                     cond_scale = brushnet_cond_scale * brushnet_keep[i]
 
-                down_block_res_samples, mid_block_res_sample, up_block_res_samples = self.brushnet(
-                    control_model_input,
-                    t,
-                    encoder_hidden_states=brushnet_encoder_hidden_states,
-                    brushnet_cond=conditioning_latents,
-                    conditioning_scale=cond_scale,
-                    guess_mode=guess_mode,
-                    return_dict=False,
-                )
+                if denoising_batch_size and denoising_batch_size < latent_model_input.shape[0]:
+                    if guess_mode:
+                        raise ValueError("denoising_batch_size does not support guess_mode")
+                    if added_cond_kwargs is not None:
+                        raise ValueError("denoising_batch_size requires no added_cond_kwargs")
+                    noise_chunks = []
+                    for first in range(0, latent_model_input.shape[0], denoising_batch_size):
+                        last = min(first + denoising_batch_size, latent_model_input.shape[0])
+                        down, mid, up = self.brushnet(
+                            control_model_input[first:last], t,
+                            encoder_hidden_states=brushnet_encoder_hidden_states[first:last],
+                            brushnet_cond=conditioning_latents[first:last],
+                            conditioning_scale=cond_scale,
+                            guess_mode=False,
+                            return_dict=False,
+                        )
+                        chunk_timestep_cond = (timestep_cond[first:last]
+                                               if timestep_cond is not None else None)
+                        noise_chunks.append(self.unet(
+                            latent_model_input[first:last], t,
+                            encoder_hidden_states=prompt_embeds[first:last],
+                            timestep_cond=chunk_timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            down_block_add_samples=down,
+                            mid_block_add_sample=mid,
+                            up_block_add_samples=up,
+                            added_cond_kwargs=None,
+                            return_dict=False,
+                        )[0])
+                        del down, mid, up
+                    noise_pred = torch.cat(noise_chunks, dim=0)
+                else:
+                    down_block_res_samples, mid_block_res_sample, up_block_res_samples = self.brushnet(
+                        control_model_input,
+                        t,
+                        encoder_hidden_states=brushnet_encoder_hidden_states,
+                        brushnet_cond=conditioning_latents,
+                        conditioning_scale=cond_scale,
+                        guess_mode=guess_mode,
+                        return_dict=False,
+                    )
 
-                if guess_mode and self.do_classifier_free_guidance:
-                    # Infered BrushNet only for the conditional batch.
-                    # To apply the output of BrushNet to both the unconditional and conditional batches,
-                    # add 0 to the unconditional batch to keep it unchanged.
-                    down_block_res_samples = [torch.cat([torch.zeros_like(d), d]) for d in down_block_res_samples]
-                    mid_block_res_sample = torch.cat([torch.zeros_like(mid_block_res_sample), mid_block_res_sample])
-                    up_block_res_samples = [torch.cat([torch.zeros_like(d), d]) for d in up_block_res_samples]
+                    if guess_mode and self.do_classifier_free_guidance:
+                        # Infered BrushNet only for the conditional batch.
+                        # To apply the output of BrushNet to both the unconditional and conditional batches,
+                        # add 0 to the unconditional batch to keep it unchanged.
+                        down_block_res_samples = [torch.cat([torch.zeros_like(d), d]) for d in down_block_res_samples]
+                        mid_block_res_sample = torch.cat([torch.zeros_like(mid_block_res_sample), mid_block_res_sample])
+                        up_block_res_samples = [torch.cat([torch.zeros_like(d), d]) for d in up_block_res_samples]
 
-                # predict the noise residual
-                noise_pred = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep_cond=timestep_cond,
-                    cross_attention_kwargs=self.cross_attention_kwargs,
-                    down_block_add_samples=down_block_res_samples,
-                    mid_block_add_sample=mid_block_res_sample,
-                    up_block_add_samples=up_block_res_samples,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False,
-                )[0]
+                    # predict the noise residual
+                    noise_pred = self.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=self.cross_attention_kwargs,
+                        down_block_add_samples=down_block_res_samples,
+                        mid_block_add_sample=mid_block_res_sample,
+                        up_block_add_samples=up_block_res_samples,
+                        added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                    )[0]
 
                 # perform guidance
                 if self.do_classifier_free_guidance:

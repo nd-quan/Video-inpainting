@@ -116,9 +116,16 @@ def parse_args():
     )
     parser.add_argument("--image_encoder_name_or_path", default=DEFAULT_IMAGE_ENCODER)
     parser.add_argument("--resolution", type=int, default=512)
+    parser.add_argument(
+        "--original_size",
+        action="store_true",
+        help="Evaluate at each video's original HxW, padding only to multiples of 8.",
+    )
     parser.add_argument("--clip_length", type=int, default=8)
     parser.add_argument("--clip_stride", type=int, default=6)
     parser.add_argument("--num_inference_steps", type=int, default=50)
+    parser.add_argument("--denoising_batch_size", type=int, default=0,
+                        help="Microbatch BrushNet/UNet inference; 0 uses the full batch")
     parser.add_argument("--guidance_scale", type=float, default=7.5)
     parser.add_argument("--brushnet_conditioning_scale", type=float, default=1.0)
     parser.add_argument("--stc_injection_scale", type=float, default=1.0)
@@ -216,6 +223,15 @@ def resolve_dataset_layout(args) -> str:
 
 
 def preflight(args) -> Tuple[HierarchicalV8ClipDataset, Dict[str, Path]]:
+    if args.original_size and (
+        getattr(args, "condition_flow_source", "student") == "teacher"
+        or getattr(args, "temporal_flow_source", "student") == "teacher"
+        ):
+        raise ValueError(
+            "Original-size evaluation needs flow at the padded image size; "
+            "the current teacher cache reader is tied to a square resolution. "
+            "Use student flow or regenerate and update the teacher cache reader."
+        )
     args.pretrained_model_name_or_path = args.pretrained_model_name_or_path.expanduser().resolve()
     args.baseline_checkpoint = args.baseline_checkpoint.expanduser().resolve()
     args.stc_adapter_path = args.stc_adapter_path.expanduser().resolve()
@@ -250,7 +266,7 @@ def preflight(args) -> Tuple[HierarchicalV8ClipDataset, Dict[str, Path]]:
         clip_image_processor=CLIPImageProcessor(),
         clip_length=args.clip_length,
         stride=args.clip_stride,
-        resolution=args.resolution,
+        resolution=None if args.original_size else args.resolution,
         include_branches=args.include_branches,
     )
     adapter = RGBSTCConditionAdapter.from_pretrained(str(args.stc_adapter_path))
@@ -272,6 +288,7 @@ def preflight(args) -> Tuple[HierarchicalV8ClipDataset, Dict[str, Path]]:
         "baseline": str(paths["root"]),
         "mask_semantics": "raw=0_BG/255_ROI; internal M_BG=1/0",
         "condition": "[z_input + delta_z_BG, M_BG]",
+        "spatial_mode": "original_size_pad8" if args.original_size else "square_resize",
     }
     if hasattr(dataset, "ignored_gt_frame_count"):
         report["ignored_gt_frame_count"] = dataset.ignored_gt_frame_count
@@ -471,6 +488,10 @@ def load_models(args, paths: Mapping[str, Path], device: torch.device):
     )
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe.to(device)
+    if args.original_size:
+        # Keep one VAE posterior (and the same sampling RNG call) while
+        # encoding/decoding its frames one at a time at native resolution.
+        pipe.vae.enable_slicing()
 
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         args.image_encoder_name_or_path
@@ -724,14 +745,17 @@ def main():
         )
         input_frames = sample["conditioning_pixel_values"]
         bg_mask = sample["masks"]
+        padded_height, padded_width = map(int, input_frames.shape[-2:])
+        if padded_height % pipe.vae_scale_factor or padded_width % pipe.vae_scale_factor:
+            raise ValueError("Evaluation canvas must be divisible by the VAE scale factor")
         roi_mask = 1.0 - bg_mask
         input_images = tensor_to_pil(input_frames)
         raw_roi_masks = masks_to_pil(roi_mask)
         latent_shape = (
-            args.clip_length,
+            int(input_frames.shape[0]),
             pipe.unet.config.in_channels,
-            args.resolution // pipe.vae_scale_factor,
-            args.resolution // pipe.vae_scale_factor,
+            padded_height // pipe.vae_scale_factor,
+            padded_width // pipe.vae_scale_factor,
         )
         independent_noise = torch.randn(
             latent_shape,
@@ -761,7 +785,10 @@ def main():
                 negative_prompt_embeds=negative_prompt_embeds,
                 image=input_images,
                 mask=raw_roi_masks,
+                height=padded_height,
+                width=padded_width,
                 num_inference_steps=args.num_inference_steps,
+                denoising_batch_size=args.denoising_batch_size,
                 guidance_scale=float(args.guidance_scale),
                 latents=independent_noise,
                 use_shared_bg_noise=True,
@@ -786,6 +813,30 @@ def main():
         finally:
             if CLEAR_PIPELINE_CALL_FN is not None:
                 CLEAR_PIPELINE_CALL_FN(pipe=pipe)
+        expected_image_size = (padded_width, padded_height)
+        if any(image.size != expected_image_size for image in generated):
+            raise RuntimeError(
+                f"VAE output must match evaluation canvas {expected_image_size}"
+            )
+        spatial_size = {
+            "original": [padded_height, padded_width],
+            "canvas": [padded_height, padded_width],
+        }
+        gt_frames = sample["pixel_values"]
+        if args.original_size:
+            original_height, original_width = map(int, sample["original_size"])
+            if not (0 < original_height <= padded_height and 0 < original_width <= padded_width):
+                raise ValueError("Invalid original_size in evaluation sample")
+            generated = [
+                image.crop((0, 0, original_width, original_height))
+                for image in generated
+            ]
+            input_frames = input_frames[..., :original_height, :original_width]
+            bg_mask = bg_mask[..., :original_height, :original_width]
+            gt_frames = gt_frames[..., :original_height, :original_width]
+            raw_roi_masks = masks_to_pil(1.0 - bg_mask)
+            input_images = tensor_to_pil(input_frames)
+            spatial_size["original"] = [original_height, original_width]
         final = composite_images(
             generated,
             input_frames,
@@ -793,8 +844,8 @@ def main():
             mode=args.roi_composite,
             blur_kernel_size=args.roi_blur_kernel_size,
         )
-        metrics = compute_metrics(final, sample["pixel_values"], bg_mask)
-        metrics.update({f"raw_{key}": value for key, value in compute_metrics(generated, sample["pixel_values"], bg_mask).items()})
+        metrics = compute_metrics(final, gt_frames, bg_mask)
+        metrics.update({f"raw_{key}": value for key, value in compute_metrics(generated, gt_frames, bg_mask).items()})
         metrics.update(condition_stats)
         metrics.update(inference_stats)
         output.mkdir(parents=True, exist_ok=True)
@@ -802,7 +853,7 @@ def main():
         save_images(final, output / "final", frame_ids)
         if args.save_references:
             save_images(input_images, output / "input", frame_ids)
-            save_images(tensor_to_pil(sample["pixel_values"]), output / "gt", frame_ids)
+            save_images(tensor_to_pil(gt_frames), output / "gt", frame_ids)
             save_images(raw_roi_masks, output / "mask_roi", frame_ids)
         metric_path.write_text(
             json.dumps(
@@ -810,6 +861,7 @@ def main():
                     "clip_index": index,
                     "video": sample["video"],
                     "frame_ids": frame_ids,
+                    "spatial_size": spatial_size,
                     "condition_seeds": {
                         "condition": condition_seed,
                         "initial": initial_seed,

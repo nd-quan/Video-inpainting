@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-BRUSHNET_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
+BRUSHNET_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." && pwd)"
 EVAL_SCRIPT="${SCRIPT_DIR}/evaluate_v8_rescaled_deformable.py"
 PYTHON_BIN="${PYTHON_BIN:-/home/cilab/ndquan/envs/guided_diff/bin/python}"
 
@@ -60,8 +60,8 @@ fi
 
 mapfile -t duplicates < <(
     comm -12 \
-        <(find "${TEST_1_ROOT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort) \
-        <(find "${TEST_2_ROOT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+        <(find "${TEST_1_ROOT}" -mindepth 1 -maxdepth 1 -type d ! -iname video ! -iname videos -printf '%f\n' | sort) \
+        <(find "${TEST_2_ROOT}" -mindepth 1 -maxdepth 1 -type d ! -iname video ! -iname videos -printf '%f\n' | sort)
 )
 if (( ${#duplicates[@]} > 0 )); then
     echo "Duplicate sequence names prevent one output root: ${duplicates[*]}" >&2
@@ -123,8 +123,14 @@ for index in "${!roots[@]}"; do
     fi
     "${PYTHON_BIN}" "${EVAL_SCRIPT}" "${COMMON_ARGS[@]}" \
         --dataset_root "${root}" "$@"
-    cp "${OUTPUT_DIR}/run_config.json" \
-        "${OUTPUT_DIR}/run_config_${label}.json"
+    if [[ -f "${OUTPUT_DIR}/run_config.json" ]]; then
+        cp "${OUTPUT_DIR}/run_config.json" \
+            "${OUTPUT_DIR}/run_config_${label}.json"
+    fi
 done
 
-echo "Combined V8-R evaluation complete: ${OUTPUT_DIR}/summary.json"
+if [[ -f "${OUTPUT_DIR}/summary.json" ]]; then
+    echo "Combined V8-R evaluation complete: ${OUTPUT_DIR}/summary.json"
+else
+    echo "Combined V8-R preflight complete: ${OUTPUT_DIR}"
+fi

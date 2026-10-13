@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run paired latent temporal guidance with student and clean teacher flow."""
+"""Run clean-teacher latent guidance; reuse the earlier student experiment."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -60,7 +60,9 @@ def execute(case, gpu, root, checkpoint, teacher):
                             "scale": 0.1, "clip_size": 4, "bg_mask": "pair_intersection",
                             "main_seed": 1234, "shared_seed": 6789})
     status_path.write_text(json.dumps(status, indent=2) + "\n")
-    if len(images) != expected or not metadata.is_file():
+    inference_done = (len(images) == expected and metadata.is_file() and
+                      status.get("inference", {}).get("returncode") == 0)
+    if not inference_done:
         print(f"GPU {gpu} START {seq} {flow}", flush=True)
         status["inference"] = run([sys.executable, "-u", str(INFERENCE)], env, case_dir / "inference.log")
         status_path.write_text(json.dumps(status, indent=2) + "\n")
@@ -86,8 +88,10 @@ def main():
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CKPT)
     parser.add_argument("--gpus", type=int, nargs="+", default=[1, 2, 3, 4])
     parser.add_argument("--flows", nargs="+", choices=("student", "teacher"),
-                        default=["student", "teacher"])
+                        default=["teacher"])
     parser.add_argument("--sequences", nargs="+", default=None)
+    parser.add_argument("--min-free-mib", type=int, default=0,
+                        help="Wait for this much free VRAM before assigning a case to a GPU.")
     args = parser.parse_args()
     root = args.output_root.resolve()
     teacher = root / "teacher_cache"
@@ -109,6 +113,13 @@ def main():
     def worker(gpu):
         failures = []
         while not cases.empty():
+            if args.min_free_mib:
+                free = int(subprocess.check_output(["nvidia-smi", "-i", str(gpu),
+                    "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                    text=True).strip().splitlines()[0])
+                if free < args.min_free_mib:
+                    time.sleep(30)
+                    continue
             try:
                 case = cases.get_nowait()
             except queue.Empty:

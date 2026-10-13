@@ -91,3 +91,8 @@ Before a full run, compare one-sequence metrics/video against the existing
 shared-noise + temporal-guidance baseline with identical masks, seeds and
 sampling settings. The model and entrypoints were smoke-tested on CPU; a
 complete GPU train/evaluation has not been run by this change.
+
+To use a separately trained two-scale flow refiner for both TCE conditioning
+and DDIM guidance, set `V8R_FLOW_REFINER_PATH` to a validated
+`flow_refinement/best.pt` checkpoint before the train or evaluation launcher.
+See `../flow_refinement/README.md` for its training and validation commands.

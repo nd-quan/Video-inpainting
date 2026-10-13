@@ -19,7 +19,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -31,7 +31,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 THIS_DIR = Path(__file__).resolve().parent
-BRUSHNET_DIR = THIS_DIR.parent
+BRUSHNET_DIR = THIS_DIR.parent.parent
 if str(BRUSHNET_DIR) not in sys.path:
     sys.path.insert(0, str(BRUSHNET_DIR))
 if str(THIS_DIR) not in sys.path:
@@ -77,6 +77,7 @@ def parse_args(default_student_backend: str = "propainter_raft") -> argparse.Nam
     parser.add_argument("--train_split", choices=("train", "valid", "test"), default="train")
     parser.add_argument("--valid_split", choices=("train", "valid", "test"), default="valid")
     parser.add_argument("--resolution", type=int, default=512)
+    parser.add_argument("--spatial_mode", choices=("square", "native"), default="square")
     parser.add_argument("--include_branches", nargs="*", default=None)
     parser.add_argument("--valid_pairs_per_sequence", type=int, default=8)
     parser.add_argument("--train_batch_size", type=int, default=1)
@@ -127,6 +128,11 @@ def parse_args(default_student_backend: str = "propainter_raft") -> argparse.Nam
     )
     parser.add_argument("--evaluate_only", default=None)
     parser.add_argument("--preflight_only", action="store_true")
+    parser.add_argument(
+        "--memory_probe",
+        action="store_true",
+        help="Run the requested train steps with backward, report peak CUDA memory, and skip validation/checkpoints.",
+    )
     parser.add_argument("--allow_teacher_checkpoint_mismatch", action="store_true")
     parser.add_argument("--log_steps", type=int, default=20)
     return parser.parse_args()
@@ -489,7 +495,7 @@ class FlowMetricAccumulator:
         predicted_forward: torch.Tensor,
         predicted_backward: torch.Tensor,
         batch: Dict[str, torch.Tensor],
-        deform_feature_size: int,
+        deform_feature_size: Union[int, Tuple[int, int]],
         deform_residual_range: float,
     ) -> None:
         size = tuple(predicted_forward.shape[-2:])
@@ -497,12 +503,13 @@ class FlowMetricAccumulator:
         pred_f, pred_b = _five(predicted_forward), _five(predicted_backward)
         self._update_direction(pred_f, target_f, valid_f, bg_f)
         self._update_direction(pred_b, target_b, valid_b, bg_b)
-        pred_f64 = resize_flow_sequence(pred_f, (deform_feature_size, deform_feature_size))
-        pred_b64 = resize_flow_sequence(pred_b, (deform_feature_size, deform_feature_size))
-        target_f64 = resize_flow_sequence(target_f, (deform_feature_size, deform_feature_size))
-        target_b64 = resize_flow_sequence(target_b, (deform_feature_size, deform_feature_size))
-        valid_f64 = F.interpolate(valid_f.flatten(0, 1), (deform_feature_size, deform_feature_size), mode="nearest").reshape_as(pred_f64[:, :, :1])
-        valid_b64 = F.interpolate(valid_b.flatten(0, 1), (deform_feature_size, deform_feature_size), mode="nearest").reshape_as(pred_b64[:, :, :1])
+        feature_size = (deform_feature_size, deform_feature_size) if isinstance(deform_feature_size, int) else deform_feature_size
+        pred_f64 = resize_flow_sequence(pred_f, feature_size)
+        pred_b64 = resize_flow_sequence(pred_b, feature_size)
+        target_f64 = resize_flow_sequence(target_f, feature_size)
+        target_b64 = resize_flow_sequence(target_b, feature_size)
+        valid_f64 = F.interpolate(valid_f.flatten(0, 1), feature_size, mode="nearest").reshape_as(pred_f64[:, :, :1])
+        valid_b64 = F.interpolate(valid_b.flatten(0, 1), feature_size, mode="nearest").reshape_as(pred_b64[:, :, :1])
         error_f64 = (pred_f64 - target_f64).float().square().sum(dim=2, keepdim=True).sqrt()
         error_b64 = (pred_b64 - target_b64).float().square().sum(dim=2, keepdim=True).sqrt()
         valid64 = torch.cat((valid_f64, valid_b64), dim=0) > 0.5
@@ -586,7 +593,10 @@ def validate(
                 predicted_forward,
                 predicted_backward,
                 batch,
-                args.deform_feature_size,
+                args.deform_feature_size if args.spatial_mode == "square" else (
+                    predicted_forward.shape[-2] // 8,
+                    predicted_forward.shape[-1] // 8,
+                ),
                 args.deform_residual_range,
             )
     result = metrics.finalize()
@@ -612,6 +622,7 @@ def _config_contract(args: argparse.Namespace) -> Dict:
         "train_split",
         "valid_split",
         "resolution",
+        "spatial_mode",
         "raft_iterations",
         "final_flow_only",
         "raft_sequence_gamma",
@@ -743,10 +754,12 @@ def preflight(args: argparse.Namespace) -> Dict:
             "Pass --allow_teacher_checkpoint_mismatch only for an explicit ablation."
         )
     train_set = RAFTTeacherFlowPairDataset(
-        args.dataset_root, args.teacher_flow_root, args.train_split, args.resolution, args.include_branches
+        args.dataset_root, args.teacher_flow_root, args.train_split, args.resolution,
+        args.include_branches, spatial_mode=args.spatial_mode
     )
     valid_set = RAFTTeacherFlowPairDataset(
-        args.dataset_root, args.teacher_flow_root, args.valid_split, args.resolution, args.include_branches
+        args.dataset_root, args.teacher_flow_root, args.valid_split, args.resolution,
+        args.include_branches, spatial_mode=args.spatial_mode
     )
     original_valid_pairs = len(valid_set)
     evenly_limit_pairs_per_sequence(valid_set, args.valid_pairs_per_sequence)
@@ -767,6 +780,7 @@ def preflight(args: argparse.Namespace) -> Dict:
         "valid_pair_count_before_limit": original_valid_pairs,
         "valid_pair_count": len(valid_set),
         "resolution": int(args.resolution),
+        "spatial_mode": args.spatial_mode,
         "raft_iterations": int(args.raft_iterations),
         "flow_loss_region": args.flow_loss_region,
         "iterative_supervision": not bool(args.final_flow_only),
@@ -827,10 +841,12 @@ def main(args: argparse.Namespace) -> None:
         json_dump(args.output_dir / "run_config.json", vars(args))
 
     train_set = RAFTTeacherFlowPairDataset(
-        args.dataset_root, args.teacher_flow_root, args.train_split, args.resolution, args.include_branches
+        args.dataset_root, args.teacher_flow_root, args.train_split, args.resolution,
+        args.include_branches, spatial_mode=args.spatial_mode
     )
     valid_set = RAFTTeacherFlowPairDataset(
-        args.dataset_root, args.teacher_flow_root, args.valid_split, args.resolution, args.include_branches
+        args.dataset_root, args.teacher_flow_root, args.valid_split, args.resolution,
+        args.include_branches, spatial_mode=args.spatial_mode
     )
     evenly_limit_pairs_per_sequence(valid_set, args.valid_pairs_per_sequence)
     loader_args = {
@@ -885,19 +901,23 @@ def main(args: argparse.Namespace) -> None:
                 if saved != current:
                     raise ValueError(f"Resume contract mismatch for {key}: {saved!r} != {current!r}")
 
-    writer = SummaryWriter(str(args.output_dir / "tensorboard")) if accelerator.is_main_process else None
-    initial = validate(accelerator.unwrap_model(model), valid_loader, args, accelerator)
-    best_score = _metric_score(initial, args.best_metric)
+    writer = SummaryWriter(str(args.output_dir / "tensorboard")) if accelerator.is_main_process and not args.memory_probe else None
+    best_score = math.inf
     has_best_checkpoint = (args.output_dir / "best.json").is_file()
-    if accelerator.is_main_process:
-        json_dump(args.output_dir / "initial_validation.json", initial)
-        print("INITIAL " + json.dumps(initial, sort_keys=True), flush=True)
-        for key, value in initial.items():
-            writer.add_scalar(f"valid/{key}", value, global_step)
-        writer.flush()
+    if not args.memory_probe:
+        initial = validate(accelerator.unwrap_model(model), valid_loader, args, accelerator)
+        best_score = _metric_score(initial, args.best_metric)
+        if accelerator.is_main_process:
+            json_dump(args.output_dir / "initial_validation.json", initial)
+            print("INITIAL " + json.dumps(initial, sort_keys=True), flush=True)
+            for key, value in initial.items():
+                writer.add_scalar(f"valid/{key}", value, global_step)
+            writer.flush()
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
+    if args.memory_probe and accelerator.device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(accelerator.device)
     while global_step < args.max_train_steps:
         for raw_batch in train_loader:
             with accelerator.accumulate(model):
@@ -931,15 +951,23 @@ def main(args: argparse.Namespace) -> None:
             if not accelerator.sync_gradients:
                 continue
             global_step += 1
+            if args.memory_probe and accelerator.device.type == "cuda":
+                print("MEMORY_PROBE " + json.dumps({
+                    "rank": accelerator.process_index,
+                    "step": global_step,
+                    "max_allocated_gib": round(torch.cuda.max_memory_allocated(accelerator.device) / 2**30, 3),
+                    "max_reserved_gib": round(torch.cuda.max_memory_reserved(accelerator.device) / 2**30, 3),
+                }, sort_keys=True), flush=True)
             if accelerator.is_main_process and (global_step == 1 or global_step % args.log_steps == 0):
                 logged = {key: float(value.detach()) for key, value in losses.items()}
                 logged.update({"step": global_step, "lr": float(scheduler.get_last_lr()[0])})
                 print("TRAIN " + json.dumps(logged, sort_keys=True), flush=True)
-                for key, value in logged.items():
-                    if key not in {"step"}:
-                        writer.add_scalar(f"train/{key}", value, global_step)
-            should_validate = global_step % args.validation_steps == 0 or global_step == args.max_train_steps
-            should_save = global_step % args.checkpointing_steps == 0 or global_step == args.max_train_steps
+                if writer is not None:
+                    for key, value in logged.items():
+                        if key not in {"step"}:
+                            writer.add_scalar(f"train/{key}", value, global_step)
+            should_validate = not args.memory_probe and (global_step % args.validation_steps == 0 or global_step == args.max_train_steps)
+            should_save = not args.memory_probe and (global_step % args.checkpointing_steps == 0 or global_step == args.max_train_steps)
             metrics = None
             is_best = False
             if should_validate:
@@ -975,6 +1003,10 @@ def main(args: argparse.Namespace) -> None:
                 break
     if writer is not None:
         writer.close()
+    if args.memory_probe:
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            print("MEMORY_PROBE_COMPLETE " + json.dumps({"steps": global_step, "ranks": accelerator.num_processes}), flush=True)
 
 
 if __name__ == "__main__":

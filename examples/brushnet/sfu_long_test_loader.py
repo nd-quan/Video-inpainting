@@ -77,6 +77,27 @@ def select_specs(names: Optional[Sequence[str]]) -> List[SequenceSpec]:
     return [spec for spec in LONG_SEQUENCE_SPECS if spec.label in requested]
 
 
+def discover_hierarchical_specs(root: Path, names: Optional[Sequence[str]]) -> List[SequenceSpec]:
+    """Discover all input/Class_*/Sequence folders for a new SFU test set."""
+    specs = [
+        SequenceSpec("test", sequence_dir.name, class_dir.name, sequence_dir.name)
+        for class_dir in sorted((root / "input").glob("Class_*"))
+        if class_dir.is_dir()
+        for sequence_dir in sorted(class_dir.iterdir())
+        if sequence_dir.is_dir()
+    ]
+    if names is not None:
+        requested = set(names)
+        available = {spec.label for spec in specs}
+        unknown = sorted(requested - available)
+        if unknown:
+            raise ValueError(f"Unknown sequence(s): {unknown}; available={sorted(available)}")
+        specs = [spec for spec in specs if spec.label in requested]
+    if not specs:
+        raise FileNotFoundError(f"No input/Class_*/Sequence folders in: {root}")
+    return specs
+
+
 def _numeric_pngs(directory: Path) -> Tuple[Tuple[Path, ...], Tuple[int, ...]]:
     if not directory.is_dir():
         raise FileNotFoundError(f"Sequence directory not found: {directory}")
@@ -159,11 +180,17 @@ def load_sequences(
     long_test_root: Path,
     output_root: Path,
     names: Optional[Sequence[str]] = None,
+    discover_hierarchical: bool = False,
 ) -> List[SequenceData]:
     long_test_root = Path(long_test_root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
     layout = _detect_layout(long_test_root)
-    specs = select_specs(names)
+    if discover_hierarchical and layout != "hierarchical":
+        raise ValueError("discover_hierarchical requires input/Class_*/Sequence layout")
+    specs = (
+        discover_hierarchical_specs(long_test_root, names)
+        if discover_hierarchical else select_specs(names)
+    )
     if layout == "flat" and names is None:
         specs = _flat_specs_present(long_test_root, specs)
         if not specs:
@@ -189,7 +216,10 @@ def load_sequences(
                 spec=spec,
                 image_dir=image_dir,
                 mask_dir=mask_dir,
-                output_dir=output_root / spec.split / spec.label,
+                output_dir=(
+                    output_root / spec.split / spec.class_name / spec.label
+                    if discover_hierarchical else output_root / spec.split / spec.label
+                ),
                 image_paths=image_paths,
                 mask_paths=mask_paths,
                 frame_ids=frame_ids,

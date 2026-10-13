@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate V8 with V7-student flow-guided temporal DDIM sampling.
+"""Evaluate V8 with student or clean teacher flow-guided temporal DDIM sampling.
 
 The frozen V7 RAFT student has two deliberately separate inference roles:
 
@@ -51,6 +51,7 @@ from STC_encoder_v8_raft_deformable.raft_guided_deformable_stc_adapter import ( 
 
 
 _BASE_LOAD_MODELS = evaluator.load_models
+_TEMPORAL_TEACHER_CACHE = None
 
 
 def _add_evaluation_arguments(parser) -> None:
@@ -66,6 +67,9 @@ def _add_evaluation_arguments(parser) -> None:
             "directly on predicted-clean VAE latents (latent)."
         ),
     )
+    parser.add_argument("--temporal_flow_source", choices=("student", "teacher"), default="student")
+    parser.add_argument("--temporal_teacher_flow_root", type=Path, default=None)
+    parser.add_argument("--temporal_teacher_flow_split", default="matched")
     # Match the established temporal-student protocol for 50 DDIM steps.
     parser.set_defaults(temporal_start_step=25, temporal_end_step=35)
     parser.add_argument(
@@ -117,6 +121,7 @@ def _select_branch_shard(dataset, args) -> Dict[str, object]:
 
 
 def preflight(args):
+    global _TEMPORAL_TEACHER_CACHE
     if args.temporal_guidance_scale < 0.0:
         raise ValueError("temporal_guidance_scale must be non-negative")
     if args.temporal_start_step < 0 or args.temporal_start_step >= args.temporal_end_step:
@@ -134,17 +139,30 @@ def preflight(args):
     if args.temporal_visibility_alpha < 0.0 or args.temporal_visibility_beta < 0.0:
         raise ValueError("temporal visibility alpha/beta must be non-negative")
 
-    # This resolves the V7 component, validates V8 architecture, and sets the
-    # V8 module's process-local flow provider contract.
+    # Validate V8 architecture and initialize its configured condition flow.
     dataset, paths = v8_evaluator.preflight(args)
     shard = _select_branch_shard(dataset, args)
+    _TEMPORAL_TEACHER_CACHE = None
+    if args.temporal_flow_source == "teacher":
+        from STC_encoder_v8_raft_deformable.oracle_teacher_flow import OracleTeacherFlowCache
+        if args.temporal_teacher_flow_root is None:
+            raise ValueError("--temporal_teacher_flow_root is required for teacher temporal flow")
+        _TEMPORAL_TEACHER_CACHE = OracleTeacherFlowCache(
+            args.temporal_teacher_flow_root, args.temporal_teacher_flow_split, args.resolution
+        )
+        print(json.dumps({"temporal_teacher_cached_pair_count":
+                          _TEMPORAL_TEACHER_CACHE.validate_clips(dataset.clips)}))
     print(
         json.dumps(
             {
                 "v8_temporal_student": "ok",
-                "v8_condition_flow": "frozen_V7_RAFT_student",
-                "guidance_flow": "frozen_V7_RAFT_student_bidirectional",
-                "guidance_flow_input": "degraded RGB [-1,1] only",
+                "v8_condition_flow": ("cached_clean_teacher_bidirectional"
+                                      if args.condition_flow_source == "teacher"
+                                      else "frozen_V7_RAFT_student"),
+                "guidance_flow": ("cached_clean_teacher_bidirectional"
+                                  if _TEMPORAL_TEACHER_CACHE is not None else "frozen_V7_RAFT_student_bidirectional"),
+                "guidance_flow_input": ("saved clean GT"
+                                        if _TEMPORAL_TEACHER_CACHE is not None else "degraded RGB [-1,1]"),
                 "guidance_region": "forward_backward_visible_stable_BG",
                 "guidance_window": [
                     int(args.temporal_start_step),
@@ -209,13 +227,14 @@ def before_pipeline_call(
     if v8_evaluator._ACTIVE_EVAL_ARGS is None:
         raise RuntimeError("V8 temporal evaluator provider was not initialized")
 
-    # Recompute the local V7 RGB flow for sampler guidance.  This is distinct
-    # from V8's feature-grid conversion, but uses the same frozen model and
-    # identical degraded-RGB normalization.
-    rgb = sample["conditioning_pixel_values"].to(device=device, dtype=torch.float32)
+    # Condition and temporal flow sources are selected independently by args.
     bg_masks = sample["masks"].to(device=device, dtype=torch.float32)
-    provider = v8_evaluator._provider(v8_evaluator._ACTIVE_EVAL_ARGS, device)
-    prediction = provider.predict_sequence(rgb.unsqueeze(0))
+    if _TEMPORAL_TEACHER_CACHE is not None:
+        prediction = _TEMPORAL_TEACHER_CACHE.sequence(sample["video"], sample["frame_ids"], device)
+    else:
+        rgb = sample["conditioning_pixel_values"].to(device=device, dtype=torch.float32)
+        provider = v8_evaluator._provider(v8_evaluator._ACTIVE_EVAL_ARGS, device)
+        prediction = provider.predict_sequence(rgb.unsqueeze(0))
     flow_forward = prediction.forward.squeeze(0)
     flow_backward = prediction.backward.squeeze(0)
 
@@ -260,7 +279,7 @@ def before_pipeline_call(
         "temporal_pair_count": int(flow_backward.shape[0]),
         "temporal_stable_bg_ratio": float(stable_bg.mean().detach().cpu()),
         "temporal_visibility_ratio": float(visibility.mean().detach().cpu()),
-        "temporal_flow_backend": "v7_student",
+        "temporal_flow_backend": "teacher_cache" if _TEMPORAL_TEACHER_CACHE is not None else "v7_student",
         "temporal_guidance_space": str(args.temporal_guidance_space),
         "temporal_flow_backward_magnitude": float(
             flow_backward.square().sum(dim=1).sqrt().mean().detach().cpu()
