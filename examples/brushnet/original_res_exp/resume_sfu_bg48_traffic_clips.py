@@ -13,7 +13,7 @@ import time
 
 from PIL import Image
 
-from run_sfu_bg48_table_window_bvi_ckpt2000_rgb_tg import (
+from videoInpainting.code.BrushNet.examples.brushnet.original_res_exp.run_sfu_bg48_table_window_bvi_ckpt2000_rgb_tg import (
     BRUSHNET, CHECKPOINT, DATASET, EVALUATOR, OUTPUT, PYTHON, STUDENT,
     gpu_memory, save_json,
 )

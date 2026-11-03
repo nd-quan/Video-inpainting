@@ -1773,13 +1773,14 @@ def main(args):
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
 
-                if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path} 저장 실행됐어!~")
-                        # ✅ brushnet / ipadapter 분리 저장
+                if global_step % args.checkpointing_steps == 0:
+                    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                    # Every rank must save its own RNG state for multi-GPU resume.
+                    accelerator.wait_for_everyone()
+                    accelerator.save_state(save_path)
+                    accelerator.wait_for_everyone()
+                    if accelerator.is_main_process:
+                        logger.info(f"Saved state to {save_path}")
                         save_brushnet_diffusers(accelerator, brushnet, os.path.join(save_path, "brushnet"))
                         save_ipadapter_for_this_loader(
                             accelerator,
@@ -1795,6 +1796,8 @@ def main(args):
 
                         logger.info(f"Saved brushnet to {os.path.join(save_path, 'brushnet')}")
                         logger.info(f"Saved ipadapter to {os.path.join(save_path, 'ipadapter')}")
+                    accelerator.wait_for_everyone()
+                if accelerator.is_main_process:
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
                         image_logs = log_validation(
                             vae,
@@ -1810,6 +1813,10 @@ def main(args):
 
             if global_step >= args.max_train_steps:
                 break
+
+        # A resumed run can reach the limit before its final computed epoch.
+        if global_step >= args.max_train_steps:
+            break
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()

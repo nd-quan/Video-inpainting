@@ -20,27 +20,50 @@ def main():
     root = args.output_root.resolve() / args.checkpoint_name
     records = []
     changed_dataset = []
-    for seq_dir in sorted(x for x in root.iterdir() if x.is_dir()):
+    changed_teacher_dataset = []
+    student_sources = {}
+    for seq_dir in sorted(x for x in root.iterdir()
+                          if x.is_dir() and (x / "teacher" / "run.json").is_file()):
         flows = {}
         for flow in ("student", "teacher"):
             if flow == "student":
-                flow_dir = REFERENCE / seq_dir.name / "latent"
-                reference_run = json.loads((REFERENCE / seq_dir.name / "comparison_run.json").read_text())
-                inference = reference_run["runs"]["latent"]["inference"]
+                local_run_path = seq_dir / "student" / "run.json"
+                if local_run_path.is_file():
+                    flow_dir = seq_dir / "student"
+                    run = json.loads(local_run_path.read_text())
+                    if not run.get("complete"):
+                        raise ValueError(f"Incomplete student rerun: {flow_dir}")
+                    inference = run["inference"]
+                    student_sources[seq_dir.name] = "local rerun"
+                else:
+                    flow_dir = REFERENCE / seq_dir.name / "latent"
+                    reference_run = json.loads((REFERENCE / seq_dir.name / "comparison_run.json").read_text())
+                    inference = reference_run["runs"]["latent"]["inference"]
+                    student_sources[seq_dir.name] = "original RGB/latent experiment"
                 source = json.loads(next(flow_dir.glob("test_*/*/source_metadata.json")).read_text())
-                first = source["frame_range"][0]
+                first, last = source["frame_range"]
                 for kind, directory in (("input", Path(source["image_dir"])),
+                                        ("mask", Path(source["mask_dir"])),
                                         ("GT", Path(source["image_dir"]).parent / "gt")):
-                    path = directory / f"{first:06d}.png"
-                    if path.stat().st_mtime > inference["started_at_unix"]:
-                        changed_dataset.append({"sequence": seq_dir.name, "kind": kind,
-                                                "path": str(path), "modified_at_unix": path.stat().st_mtime})
+                    for frame in range(first, last + 1):
+                        path = directory / f"{frame:06d}.png"
+                        if path.stat().st_mtime > inference["started_at_unix"]:
+                            changed_dataset.append({"sequence": seq_dir.name, "kind": kind,
+                                                    "path": str(path), "modified_at_unix": path.stat().st_mtime})
             else:
                 flow_dir = seq_dir / flow
                 run = json.loads((flow_dir / "run.json").read_text())
                 if not run.get("complete"):
                     raise ValueError(f"Incomplete run: {flow_dir}")
                 inference = run["inference"]
+                for kind, directory in (("input", Path(source["image_dir"])),
+                                        ("mask", Path(source["mask_dir"])),
+                                        ("GT", Path(source["image_dir"]).parent / "gt")):
+                    for frame in range(first, last + 1):
+                        path = directory / f"{frame:06d}.png"
+                        if path.stat().st_mtime > inference["started_at_unix"]:
+                            changed_teacher_dataset.append({"sequence": seq_dir.name, "kind": kind,
+                                                            "path": str(path), "modified_at_unix": path.stat().st_mtime})
             if inference["returncode"]:
                 raise ValueError(f"Inference failed: {flow_dir}")
             paths = list(flow_dir.glob("test_*/metrics_full_reference/metrics.csv"))
@@ -77,13 +100,16 @@ def main():
     (root / "student_teacher_summary.json").write_text(json.dumps({"records": records,
         "macro_mean": macro, "delta_definition": "teacher minus student",
         "timing_definition": "end-to-end inference process wall time; excludes cache preparation and metric evaluation; runs occurred on different dates with concurrent GPU workloads",
-        "teacher_is_oracle": True, "student_source": str(REFERENCE),
-        "comparison_valid": not changed_dataset,
-        "dataset_files_modified_after_student_run": changed_dataset}, indent=2) + "\n")
+        "teacher_is_oracle": True, "student_sources": student_sources,
+        "comparison_valid": not changed_dataset and not changed_teacher_dataset,
+        "dataset_files_modified_after_student_run": changed_dataset,
+        "dataset_files_modified_after_teacher_run": changed_teacher_dataset}, indent=2) + "\n")
     lines = ["# Student flow vs. teacher flow: latent temporal guidance", "",
-             *( [f"**VALIDITY WARNING:** Current dataset inputs/GT were modified after the stored student run for {len(set(x['sequence'] for x in changed_dataset))}/{len(records)} sequences. The table below is not a controlled flow comparison; do not attribute its differences to the flow backend.", ""] if changed_dataset else [] ),
+             *( [f"**VALIDITY WARNING:** Current dataset inputs, masks, or GT were modified after student or teacher inference for {len({x['sequence'] for x in changed_dataset + changed_teacher_dataset})}/{len(records)} sequences. The table below is not a controlled flow comparison; do not attribute its differences to the flow backend.", ""] if changed_dataset or changed_teacher_dataset else [] ),
              "Matched checkpoint, 50 DDIM steps, window 0–50, scale 0.1, clip size 4, pair-intersection BG mask, identical noise seeds.",
-             "Student metrics and timing come from the prior RGB/latent experiment; teacher flow is an oracle computed from clean GT using ProPainter RAFT. Teacher-cache preparation is excluded from inference time.", "",
+             f"Student source: {sum(value == 'local rerun' for value in student_sources.values())} current-dataset reruns; "
+             f"{sum(value != 'local rerun' for value in student_sources.values())} unchanged sequences from the prior RGB/latent experiment. "
+             "Teacher flow is an oracle computed from clean GT using ProPainter RAFT. Teacher-cache preparation is excluded from inference time.", "",
              "| Sequence | Frames | PSNR S/T/Δ | SSIM S/T/Δ | LPIPS S/T/Δ | WE-L2 (×10⁻²) S/T/Δ | VFID S/T/Δ | Time S/T |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"]
     for row in [*records, macro]:
@@ -100,7 +126,7 @@ def main():
     psnr_lower = sum(row["Teacher−student PSNR"] < 0 for row in records)
     ssim_lower = sum(row["Teacher−student SSIM"] < 0 for row in records)
     lines += ["", "## Interpretation", ""]
-    if changed_dataset:
+    if changed_dataset or changed_teacher_dataset:
         lines += ["The stored student run cannot be compared causally with the teacher run because the dataset changed in between. A four-frame current-code student rerun for BQSquare reproduced the teacher's first frame exactly and differed by only about 0.08–0.11 RGB levels on subsequent frames, while both differed from the stored student output by about 5–6 levels."]
     else:
         lines += [f"Teacher has lower PSNR on {psnr_lower}/{len(records)} sequences and lower SSIM on {ssim_lower}/{len(records)}. "

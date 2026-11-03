@@ -43,6 +43,8 @@ class NativeClipDataset(HierarchicalV8ClipDataset):
         super().__init__(*args, resolution=None, **kwargs)
         sizes = {}
         counts = Counter()
+        training_counts = Counter()
+        resized_frames = 0
         for path in sorted(self.roots["GT"].rglob("*.png")):
             relative = path.relative_to(self.roots["GT"])
             if self.include_branches and relative.parent.as_posix() not in self.include_branches:
@@ -54,7 +56,12 @@ class NativeClipDataset(HierarchicalV8ClipDataset):
             if len(set(triplet_sizes)) != 1:
                 raise ValueError(f"GT/input/mask sizes differ: {relative}: {triplet_sizes}")
             sizes[relative] = triplet_sizes[0]
-            counts[f"{triplet_sizes[0][0]}x{triplet_sizes[0][1]}"] += 1
+            width, height = triplet_sizes[0]
+            counts[f"{width}x{height}"] += 1
+            scale = min(1.0, self.max_width / width, self.max_height / height)
+            training_width, training_height = round(width * scale), round(height * scale)
+            training_counts[f"{training_width}x{training_height}"] += 1
+            resized_frames += scale < 1.0
         before = len(self.clips)
         self.clips = [clip for clip in self.clips if len({sizes[p] for p in clip[1]}) == 1]
         if not self.clips:
@@ -63,12 +70,14 @@ class NativeClipDataset(HierarchicalV8ClipDataset):
         self.sizes = sizes
         self.report = {
             "dataset_root": str(self.dataset_root), "split": self.split,
-            "resize": False, "crop": False, "pad_multiple": 64,
+            "resize": bool(resized_frames), "resized_frames": resized_frames,
+            "crop": False, "pad_multiple": 64,
             "rgb_padding": "replicate right/bottom", "roi_padding": 0,
             "train_eval_overlap_policy": "keep all requested training frames",
             "frames": self.frame_count, "covered_frames": self.covered_frame_count,
             "clips": len(self.clips), "clip_length": self.clip_length,
             "clip_stride": self.stride, "frames_by_stored_size_wh": dict(sorted(counts.items())),
+            "frames_by_training_size_wh": dict(sorted(training_counts.items())),
             "clips_dropped_at_size_changes": before - len(self.clips),
             "note": "512x512 source files remain 512x512; native detail cannot be recovered by padding.",
         }
@@ -213,9 +222,15 @@ def parse_args():
     parser.add_argument("--max_height", type=int, default=1080)
     parser.add_argument("--max_width", type=int, default=1920)
     parser.add_argument("--frame_microbatch", type=int, default=1)
+    parser.add_argument("--single_frame_above_padded_area", type=int, default=None,
+                        help="Use a one-frame microbatch when padded H*W exceeds this area; otherwise use --frame_microbatch")
+    parser.add_argument("--full_clip_at_or_below_padded_area", type=int, default=None,
+                        help="Process the full clip together when padded H*W is at most this area")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--max_train_steps", type=int, default=1000)
     parser.add_argument("--checkpointing_steps", type=int, default=250)
+    parser.add_argument("--skip_checkpoint_saves", action="store_true",
+                        help="For short memory probes only; do not write training checkpoints")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
     parser.add_argument("--lr_warmup_steps", type=int, default=50)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
@@ -240,6 +255,14 @@ def parse_args():
         parser.error("Invalid learning rate, warmup or gradient clipping value")
     if args.dataloader_num_workers < 0:
         parser.error("--dataloader_num_workers must be nonnegative")
+    if args.single_frame_above_padded_area is not None and args.single_frame_above_padded_area <= 0:
+        parser.error("--single_frame_above_padded_area must be positive")
+    if args.full_clip_at_or_below_padded_area is not None and args.full_clip_at_or_below_padded_area <= 0:
+        parser.error("--full_clip_at_or_below_padded_area must be positive")
+    if (args.full_clip_at_or_below_padded_area is not None
+            and args.single_frame_above_padded_area is not None
+            and args.full_clip_at_or_below_padded_area >= args.single_frame_above_padded_area):
+        parser.error("Full-clip area threshold must be below the single-frame area threshold")
     return args
 
 
@@ -460,14 +483,21 @@ def main(args):
                         raise ValueError(f"Unsupported prediction type: {scheduler.config.prediction_type}")
                     weights = latent_valid_weights(batch["original_hw"], latents.shape[-2:], vae_scale, latents.device)
                 frame_count = latents.shape[0]
+                padded_area = batch["pixel_values"].shape[-2] * batch["pixel_values"].shape[-1]
+                if args.single_frame_above_padded_area is not None and padded_area > args.single_frame_above_padded_area:
+                    frame_microbatch = 1
+                elif args.full_clip_at_or_below_padded_area is not None and padded_area <= args.full_clip_at_or_below_padded_area:
+                    frame_microbatch = frame_count
+                else:
+                    frame_microbatch = args.frame_microbatch
                 # Accelerator divides backward losses by the configured K.
                 # Correct the last group when the epoch contains fewer than K clips.
                 group_start = (batch_index // args.gradient_accumulation_steps) * args.gradient_accumulation_steps
                 group_size = min(args.gradient_accumulation_steps, len(loader) - group_start)
                 accumulation_correction = args.gradient_accumulation_steps / group_size
                 clip_loss = 0.0
-                for start in range(0, frame_count, args.frame_microbatch):
-                    end = min(frame_count, start + args.frame_microbatch)
+                for start in range(0, frame_count, frame_microbatch):
+                    end = min(frame_count, start + frame_microbatch)
                     section = slice(start, end)
                     # At a synchronization step, reduce DDP gradients only on
                     # the final frame chunk. Other accumulation steps stay no_sync.
@@ -493,13 +523,17 @@ def main(args):
                 if accelerator.is_main_process:
                     record = {"step": step, "epoch": epoch, "loss": averaged_loss, "lr": lr_scheduler.get_last_lr()[0],
                               "original_hw": batch["original_hw"].tolist(), "latent_hw": list(latents.shape[-2:]),
+                              "frame_microbatch_used": frame_microbatch,
                               "update_seconds": time.monotonic() - update_started,
                               "optimizer_step_skipped": accelerator.optimizer_step_was_skipped}
+                    if accelerator.device.type == "cuda":
+                        record["peak_allocated_gib"] = round(torch.cuda.max_memory_allocated(accelerator.device) / 2**30, 3)
+                        record["peak_reserved_gib"] = round(torch.cuda.max_memory_reserved(accelerator.device) / 2**30, 3)
                     print(json.dumps(record), flush=True)
                     with (args.output_dir / "train_log.jsonl").open("a") as handle:
                         handle.write(json.dumps(record) + "\n")
                 loss_sum, accumulated_clips = 0.0, 0
-                if step % args.checkpointing_steps == 0 or step == args.max_train_steps:
+                if not args.skip_checkpoint_saves and (step % args.checkpointing_steps == 0 or step == args.max_train_steps):
                     save_checkpoint(accelerator, model, args, step, epoch, batch_index + 1)
                 update_started = time.monotonic()
                 if step >= args.max_train_steps:

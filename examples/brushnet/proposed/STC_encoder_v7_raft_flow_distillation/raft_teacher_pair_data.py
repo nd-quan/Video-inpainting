@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from flow_spatial import load_bg_mask, load_rgb
 
 
 def _normalize_branches(branches: Optional[Sequence[str]]) -> Tuple[str, ...]:
@@ -71,17 +72,21 @@ class RAFTTeacherFlowPairDataset(Dataset):
         include_branches: Optional[Sequence[str]] = None,
         validate_files: bool = True,
         spatial_mode: str = "square",
+        max_input_side: int = 960,
     ):
         self.dataset_root = Path(dataset_root).expanduser().resolve()
         self.teacher_flow_root = Path(teacher_flow_root).expanduser().resolve()
         self.split = str(split)
         self.resolution = int(resolution)
         self.spatial_mode = str(spatial_mode)
+        self.max_input_side = int(max_input_side)
         self.include_branches = _normalize_branches(include_branches)
         if self.resolution < 8 or self.resolution % 8:
             raise ValueError("resolution must be a positive multiple of 8")
-        if self.spatial_mode not in {"square", "native"}:
-            raise ValueError("spatial_mode must be 'square' or 'native'")
+        if self.spatial_mode not in {"square", "native", "max_side"}:
+            raise ValueError("spatial_mode must be 'square', 'native', or 'max_side'")
+        if self.max_input_side < 8 or self.max_input_side % 8:
+            raise ValueError("max_input_side must be a positive multiple of 8")
         if self.split not in {"train", "valid", "test"}:
             raise ValueError(f"Unknown split {self.split!r}")
         metadata_path = self.teacher_flow_root / "metadata.json"
@@ -89,6 +94,11 @@ class RAFTTeacherFlowPairDataset(Dataset):
         if not metadata_path.is_file() or not manifest_path.is_file():
             raise FileNotFoundError("Dataset manifest or teacher-flow metadata is missing")
         self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if self.spatial_mode == "max_side" and (
+            self.metadata.get("spatial_mode") != "max_side"
+            or self.metadata.get("max_input_side") != self.max_input_side
+        ):
+            raise ValueError("Teacher cache spatial preprocessing differs from student")
         metadata_root = self.metadata.get("dataset_root")
         if metadata_root and Path(metadata_root).expanduser().resolve() != self.dataset_root:
             raise ValueError(
@@ -137,6 +147,8 @@ class RAFTTeacherFlowPairDataset(Dataset):
         return len(self.entries)
 
     def _rgb(self, path: Path) -> torch.Tensor:
+        if self.spatial_mode == "max_side":
+            return load_rgb(path, self.max_input_side)
         with Image.open(path) as image:
             image = image.convert("RGB")
             if self.spatial_mode == "square":
@@ -149,6 +161,8 @@ class RAFTTeacherFlowPairDataset(Dataset):
         return torch.from_numpy(np.ascontiguousarray(array.transpose(2, 0, 1))).div_(127.5).sub_(1.0)
 
     def _bg_mask(self, path: Path) -> torch.Tensor:
+        if self.spatial_mode == "max_side":
+            return load_bg_mask(path, self.max_input_side)
         with Image.open(path) as image:
             image = image.convert("L")
             if self.spatial_mode == "square":

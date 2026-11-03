@@ -1,0 +1,23 @@
+{
+  "gt_source": "original 8-bit yuv420p YUV",
+  "mask_source": "Descriptors/SFU_full ROI boxes",
+  "mask_semantics": "255=ROI, 0=BG",
+  "qps": {
+    "bg46": {
+      "train": 4824,
+      "test": 1206
+    },
+    "bg52": {
+      "train": 3544,
+      "test": 886
+    },
+    "bg56": {
+      "train": 4824,
+      "test": 1206
+    },
+    "bg60": {
+      "train": 4824,
+      "test": 1206
+    }
+  }
+}

@@ -22,6 +22,8 @@ GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-6}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-4170}"
 CHECKPOINTING_STEPS="${CHECKPOINTING_STEPS:-250}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
+LR_SCHEDULER="${LR_SCHEDULER:-constant}"
+LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-500}"
 SHARED_BG_NOISE_STRENGTH="${SHARED_BG_NOISE_STRENGTH:-0.95}"
 SEQUENCE_SHARED_NOISE_REFRESH="${SEQUENCE_SHARED_NOISE_REFRESH:-epoch}"
 SEED="${SEED:-1234}"
@@ -72,9 +74,12 @@ done
 
 cd "${SCRIPT_DIR}"
 
-accelerate launch \
-    --num_processes "${NUM_PROCESSES}" \
-    --mixed_precision "${MIXED_PRECISION}" \
+LAUNCH_ARGS=(--num_processes "${NUM_PROCESSES}" --mixed_precision "${MIXED_PRECISION}")
+if (( NUM_PROCESSES > 1 )); then
+    LAUNCH_ARGS+=(--multi_gpu)
+fi
+
+accelerate launch "${LAUNCH_ARGS[@]}" \
     "${TRAIN_SCRIPT}" \
     --pretrained_model_name_or_path "${PRETRAINED_MODEL}" \
     "${DATASET_ARGS[@]}" \
@@ -92,8 +97,8 @@ accelerate launch \
     --max_train_steps "${MAX_TRAIN_STEPS}" \
     --checkpointing_steps "${CHECKPOINTING_STEPS}" \
     --learning_rate "${LEARNING_RATE}" \
-    --lr_scheduler constant \
-    --lr_warmup_steps 500 \
+    --lr_scheduler "${LR_SCHEDULER}" \
+    --lr_warmup_steps "${LR_WARMUP_STEPS}" \
     --gradient_checkpointing \
     --set_grads_to_none \
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" \

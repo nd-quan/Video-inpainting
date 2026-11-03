@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-import postprocess_sfu_bg48_bvi as workflow
+import videoInpainting.code.BrushNet.examples.brushnet.original_res_exp.postprocess_sfu_bg48_bvi as workflow
 
 
 BRUSHNET = Path(__file__).resolve().parents[2]

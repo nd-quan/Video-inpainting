@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raft-checkpoint", type=Path)
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=256)
+    parser.add_argument("--max-input-side", type=int, default=0,
+                        help="Pad to multiple of 64, then limit long side while keeping aspect ratio")
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--iters", type=int, default=20)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -104,8 +108,12 @@ def main() -> None:
     args = parse_args()
     if args.resume and args.overwrite:
         raise SystemExit("--resume and --overwrite are mutually exclusive")
-    if args.height % 8 or args.width % 8:
+    if args.max_input_side and (args.max_input_side < 8 or args.max_input_side % 8):
+        raise SystemExit("--max-input-side must be a positive multiple of 8")
+    if not args.max_input_side and (args.height % 8 or args.width % 8):
         raise SystemExit("RAFT height and width must be divisible by 8")
+    if args.num_shards < 1 or not 0 <= args.shard_index < args.num_shards:
+        raise SystemExit("Invalid shard index/count")
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit("CUDA was requested but is unavailable")
 
@@ -124,19 +132,25 @@ def main() -> None:
         raise FileNotFoundError(checkpoint)
 
     sys.path.insert(0, str(propainter_root))
+    if args.max_input_side:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "STC_encoder_v7_raft_flow_distillation"))
+        from flow_spatial import load_rgb
     from core.vcm_flow_utils import directional_fb_confidence
     from model.modules.flow_comp_raft import initialize_RAFT
 
     output_root.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger(output_root / "logs" / "precompute.log")
+    logger = setup_logger(output_root / "logs" / f"precompute_shard{args.shard_index}.log")
     metadata = {
         "version": 1,
         "dataset_root": str(dataset_root),
         "manifest": str(manifest_path),
         "raft_checkpoint": str(checkpoint),
         "raft_sha256": sha256(checkpoint),
-        "height": args.height,
-        "width": args.width,
+        "height": None if args.max_input_side else args.height,
+        "width": None if args.max_input_side else args.width,
+        "spatial_mode": "max_side" if args.max_input_side else "fixed",
+        "max_input_side": args.max_input_side or None,
+        "pad_multiple": 64 if args.max_input_side else None,
         "iters": args.iters,
         "normalization": "RGB [0,1] -> [-1,1]",
         "format": (
@@ -147,15 +161,22 @@ def main() -> None:
     metadata_path = output_root / "metadata.json"
     if metadata_path.is_file() and not args.overwrite:
         old = json.loads(metadata_path.read_text(encoding="utf-8"))
-        for key in ("raft_sha256", "height", "width", "iters"):
+        for key in ("dataset_root", "raft_sha256", "height", "width", "iters", "spatial_mode", "max_input_side"):
             if old.get(key) != metadata[key]:
                 raise RuntimeError(
                     f"Existing metadata differs at {key}; use another output root "
                     "or pass --overwrite"
                 )
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    if args.shard_index == 0:
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
     pairs = list(iter_manifest_pairs(manifest, set(args.splits)))
+    if args.num_shards > 1:
+        branch_shard = {
+            (sequence["class"], sequence["name"]): index % args.num_shards
+            for index, sequence in enumerate(manifest["sequences"])
+        }
+        pairs = [pair for pair in pairs if branch_shard[(pair[0]["class"], pair[0]["name"])] == args.shard_index]
     device = torch.device(args.device)
     logger.info("Loading ProPainter RAFT teacher from %s", checkpoint)
     model = initialize_RAFT(str(checkpoint), device=device)
@@ -177,12 +198,12 @@ def main() -> None:
                 f"{destination} exists; pass --resume or --overwrite"
             )
         frame_root = dataset_root / split / "GT" / class_name / name
-        frame0 = load_frame(
-            frame_root / f"{index0:06d}.png", args.height, args.width, device
-        )
-        frame1 = load_frame(
-            frame_root / f"{index1:06d}.png", args.height, args.width, device
-        )
+        if args.max_input_side:
+            frame0 = load_rgb(frame_root / f"{index0:06d}.png", args.max_input_side)[None].to(device)
+            frame1 = load_rgb(frame_root / f"{index1:06d}.png", args.max_input_side)[None].to(device)
+        else:
+            frame0 = load_frame(frame_root / f"{index0:06d}.png", args.height, args.width, device)
+            frame1 = load_frame(frame_root / f"{index1:06d}.png", args.height, args.width, device)
         teacher_f, teacher_b = estimate_pair(model, frame0, frame1, args.iters)
         valid_f, _, _ = directional_fb_confidence(teacher_f, teacher_b)
         valid_b, _, _ = directional_fb_confidence(teacher_b, teacher_f)

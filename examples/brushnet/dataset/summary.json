@@ -1,0 +1,102 @@
+{
+  "config": {
+    "source": "/home/cilab/ndquan/vcm-rs/output/postprocess_sfu_full_qp0_bg_multiqp",
+    "train_fraction": 0.8,
+    "test_fraction": 0.2,
+    "policy": "temporal",
+    "seed": 42,
+    "include_partial_qp52": false,
+    "file_mode": "hardlink"
+  },
+  "qps": {
+    "bg46": {
+      "bg_qp": 46,
+      "sequences": 14,
+      "train_images": 4824,
+      "test_images": 1206,
+      "total_images": 6030,
+      "sequence_names": [
+        "BQMall",
+        "BQSquare",
+        "BQTerrace",
+        "BasketballDrill",
+        "BasketballDrive",
+        "BasketballPass",
+        "BlowingBubbles",
+        "Cactus",
+        "Kimono",
+        "ParkScene",
+        "PartyScene",
+        "RaceHorsesC",
+        "RaceHorsesD",
+        "Traffic"
+      ]
+    },
+    "bg52": {
+      "bg_qp": 52,
+      "sequences": 11,
+      "train_images": 3544,
+      "test_images": 886,
+      "total_images": 4430,
+      "sequence_names": [
+        "BQMall",
+        "BQTerrace",
+        "BasketballDrive",
+        "BasketballPass",
+        "Cactus",
+        "Kimono",
+        "ParkScene",
+        "PartyScene",
+        "RaceHorsesC",
+        "RaceHorsesD",
+        "Traffic"
+      ]
+    },
+    "bg56": {
+      "bg_qp": 56,
+      "sequences": 14,
+      "train_images": 4824,
+      "test_images": 1206,
+      "total_images": 6030,
+      "sequence_names": [
+        "BQMall",
+        "BQSquare",
+        "BQTerrace",
+        "BasketballDrill",
+        "BasketballDrive",
+        "BasketballPass",
+        "BlowingBubbles",
+        "Cactus",
+        "Kimono",
+        "ParkScene",
+        "PartyScene",
+        "RaceHorsesC",
+        "RaceHorsesD",
+        "Traffic"
+      ]
+    },
+    "bg60": {
+      "bg_qp": 60,
+      "sequences": 14,
+      "train_images": 4824,
+      "test_images": 1206,
+      "total_images": 6030,
+      "sequence_names": [
+        "BQMall",
+        "BQSquare",
+        "BQTerrace",
+        "BasketballDrill",
+        "BasketballDrive",
+        "BasketballPass",
+        "BlowingBubbles",
+        "Cactus",
+        "Kimono",
+        "ParkScene",
+        "PartyScene",
+        "RaceHorsesC",
+        "RaceHorsesD",
+        "Traffic"
+      ]
+    }
+  }
+}

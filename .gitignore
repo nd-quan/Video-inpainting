@@ -18,13 +18,21 @@ __pycache__/
 *.safetensors
 *.pkl
 
+Quan_test/**/*.pdf
+Quan_test/**/*.pdf
+
+
 # tests and logs
 tests/fixtures/cached_*_text.txt
 logs/
 lightning_logs/
 lang_code_data/
 Quan_test/train/
+
+
 experiments/
+Naeun/
+/examples/brushnet/inference
 
 # Distribution / packaging
 .Python

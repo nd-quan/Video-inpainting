@@ -13,7 +13,7 @@ import time
 from PIL import Image
 
 import add_we_l2_sfu_bg56 as we_l2
-import postprocess_sfu_bg56_bvi_no_we as shared
+import videoInpainting.code.BrushNet.examples.brushnet.original_res_exp.postprocess_sfu_bg56_bvi_no_we as shared
 
 
 EVAL = shared.BRUSHNET / "experiments/eval_sfu_bg48_table_window_bvi_ckpt2000_rgb_tg"

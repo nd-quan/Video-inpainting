@@ -77,7 +77,8 @@ def parse_args(default_student_backend: str = "propainter_raft") -> argparse.Nam
     parser.add_argument("--train_split", choices=("train", "valid", "test"), default="train")
     parser.add_argument("--valid_split", choices=("train", "valid", "test"), default="valid")
     parser.add_argument("--resolution", type=int, default=512)
-    parser.add_argument("--spatial_mode", choices=("square", "native"), default="square")
+    parser.add_argument("--spatial_mode", choices=("square", "native", "max_side"), default="square")
+    parser.add_argument("--max_input_side", type=int, default=960)
     parser.add_argument("--include_branches", nargs="*", default=None)
     parser.add_argument("--valid_pairs_per_sequence", type=int, default=8)
     parser.add_argument("--train_batch_size", type=int, default=1)
@@ -623,6 +624,7 @@ def _config_contract(args: argparse.Namespace) -> Dict:
         "valid_split",
         "resolution",
         "spatial_mode",
+        "max_input_side",
         "raft_iterations",
         "final_flow_only",
         "raft_sequence_gamma",
@@ -700,6 +702,8 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"{name} must be positive")
     if int(args.resolution) % 8:
         raise ValueError("resolution must be divisible by 8")
+    if int(args.max_input_side) < 8 or int(args.max_input_side) % 8:
+        raise ValueError("max_input_side must be a positive multiple of 8")
     for name in (
         "learning_rate",
         "teacher_weight",
@@ -755,11 +759,11 @@ def preflight(args: argparse.Namespace) -> Dict:
         )
     train_set = RAFTTeacherFlowPairDataset(
         args.dataset_root, args.teacher_flow_root, args.train_split, args.resolution,
-        args.include_branches, spatial_mode=args.spatial_mode
+        args.include_branches, spatial_mode=args.spatial_mode, max_input_side=args.max_input_side
     )
     valid_set = RAFTTeacherFlowPairDataset(
         args.dataset_root, args.teacher_flow_root, args.valid_split, args.resolution,
-        args.include_branches, spatial_mode=args.spatial_mode
+        args.include_branches, spatial_mode=args.spatial_mode, max_input_side=args.max_input_side
     )
     original_valid_pairs = len(valid_set)
     evenly_limit_pairs_per_sequence(valid_set, args.valid_pairs_per_sequence)
@@ -781,6 +785,7 @@ def preflight(args: argparse.Namespace) -> Dict:
         "valid_pair_count": len(valid_set),
         "resolution": int(args.resolution),
         "spatial_mode": args.spatial_mode,
+        "max_input_side": int(args.max_input_side),
         "raft_iterations": int(args.raft_iterations),
         "flow_loss_region": args.flow_loss_region,
         "iterative_supervision": not bool(args.final_flow_only),
@@ -842,11 +847,11 @@ def main(args: argparse.Namespace) -> None:
 
     train_set = RAFTTeacherFlowPairDataset(
         args.dataset_root, args.teacher_flow_root, args.train_split, args.resolution,
-        args.include_branches, spatial_mode=args.spatial_mode
+        args.include_branches, spatial_mode=args.spatial_mode, max_input_side=args.max_input_side
     )
     valid_set = RAFTTeacherFlowPairDataset(
         args.dataset_root, args.teacher_flow_root, args.valid_split, args.resolution,
-        args.include_branches, spatial_mode=args.spatial_mode
+        args.include_branches, spatial_mode=args.spatial_mode, max_input_side=args.max_input_side
     )
     evenly_limit_pairs_per_sequence(valid_set, args.valid_pairs_per_sequence)
     loader_args = {

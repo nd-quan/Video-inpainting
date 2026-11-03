@@ -25,6 +25,8 @@ def main():
     p.add_argument('--evaluator_root', type=Path, default=ROOT.parent / 'video-inpainting-evaluation')
     p.add_argument('--skip_warping', action='store_true',
                    help='Omit WE and WE_L2 calculations and output columns.')
+    p.add_argument('--sequences', nargs='+',
+                   help='Evaluate only these sequence directories; defer the aggregate report.')
     args = p.parse_args()
     sys.path.insert(0, str(args.evaluator_root))
     from src.fid.util import extract_video_clip_features
@@ -33,6 +35,12 @@ def main():
     out.mkdir(exist_ok=True)
     manifests = sorted(args.eval_root.glob('*/clip_metrics.json'))
     expected = json.loads((args.eval_root / 'summary.json').read_text())
+    if args.sequences:
+        requested = set(args.sequences)
+        manifests = [manifest for manifest in manifests if manifest.parent.name in requested]
+        missing = requested - {manifest.parent.name for manifest in manifests}
+        if missing:
+            raise ValueError(f'Sequences not found: {sorted(missing)}')
     if not manifests:
         raise ValueError('No completed sequences')
     perceptual = lpips.LPIPS(net='alex').cuda().eval()
@@ -40,14 +48,33 @@ def main():
     i3d.load_state_dict(torch.load(args.evaluator_root / 'pretrained_models/rgb_imagenet.pt', map_location='cpu'))
     i3d.cuda().eval()
     rows, all_gt, all_pred = [], [], []
+    score_names = (('PSNR', 'SSIM', 'LPIPS', 'FS') if args.skip_warping
+                   else ('PSNR', 'SSIM', 'LPIPS', 'WE', 'WE_L2', 'FS'))
     with torch.inference_mode():
         for manifest in manifests:
             meta = json.loads(manifest.read_text())
             ids = meta['frame_ids']
             pred_paths = [manifest.parent / 'final' / f'{i:06d}.png' for i in ids]
             gt_paths = [manifest.parent / 'gt' / f'{i:06d}.png' for i in ids]
-            score_names = (('PSNR', 'SSIM', 'LPIPS', 'FS') if args.skip_warping
-                           else ('PSNR', 'SSIM', 'LPIPS', 'WE', 'WE_L2', 'FS'))
+            cached_row = out / f'{manifest.parent.name}.json'
+            cached_gt = out / f'{manifest.parent.name}_gt_i3d.npy'
+            cached_pred = out / f'{manifest.parent.name}_final_i3d.npy'
+            if cached_row.is_file() and cached_gt.is_file() and cached_pred.is_file():
+                try:
+                    row = json.loads(cached_row.read_text())
+                    if (row['sequence'] == meta['video'] and row['frames'] == len(ids)
+                            and row['pairs'] == len(ids) - 1
+                            and all(np.isfinite(row[key]) for key in (*score_names, 'VFID_Clips'))):
+                        gt_features = np.load(cached_gt)
+                        pred_features = np.load(cached_pred)
+                        if gt_features.shape == pred_features.shape and gt_features.size:
+                            rows.append(row)
+                            all_gt.append(gt_features)
+                            all_pred.append(pred_features)
+                            print(f'Reused completed metrics: {meta["video"]}', flush=True)
+                            continue
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
             scores = {k: [] for k in score_names}
             prev = None
             for pred_path, gt_path in zip(pred_paths, gt_paths):
@@ -81,8 +108,11 @@ def main():
             rows.append(row)
             (out / f'{manifest.parent.name}.json').write_text(json.dumps(row, indent=2))
             print(json.dumps(row), flush=True)
+    if args.sequences:
+        print(f'Sequence shard complete: {len(rows)} sequences', flush=True)
+        return
     aggregate = {'sequence': 'ALL', 'frames': sum(r['frames'] for r in rows), 'pairs': sum(r['pairs'] for r in rows)}
-    for k in scores:
+    for k in score_names:
         weight = 'pairs' if k in ('WE', 'WE_L2', 'FS') else 'frames'
         aggregate[k] = float(np.average([r[k] for r in rows], weights=[r[weight] for r in rows]))
     aggregate['VFID_Clips'] = frechet_distance_low_rank(np.concatenate(all_gt), np.concatenate(all_pred))

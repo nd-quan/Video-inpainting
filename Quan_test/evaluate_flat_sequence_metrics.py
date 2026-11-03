@@ -18,6 +18,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--eval-root', type=Path, required=True)
     parser.add_argument('--gt-root', type=Path, required=True)
+    parser.add_argument('--hierarchical', action='store_true',
+                        help='Read <eval-root>/Class_*/<sequence> and <gt-root>/GT/Class_*/<sequence>.')
+    parser.add_argument('--require-native-size', action='store_true',
+                        help='Require prediction and GT sizes to match; never resize the GT.')
     parser.add_argument('--allow-partial', action='store_true')
     parser.add_argument('--sequences', nargs='+', help='Evaluate only these sequence names.')
     parser.add_argument('--output-name', default='metrics_full_reference')
@@ -30,7 +34,14 @@ def main():
     if output.exists():
         raise FileExistsError(output)
     records = []
-    for source in sorted(eval_root.iterdir()):
+    if args.hierarchical:
+        sources = sorted(
+            sequence for class_dir in eval_root.glob('Class_*') if class_dir.is_dir()
+            for sequence in class_dir.iterdir() if sequence.is_dir()
+        )
+    else:
+        sources = sorted(eval_root.iterdir())
+    for source in sources:
         if not source.is_dir():
             continue
         if args.sequences and source.name not in args.sequences:
@@ -38,7 +49,11 @@ def main():
         predictions = {int(p.stem): p for p in source.glob('*.png') if p.stem.isdigit()}
         if not predictions:
             continue
-        references = {int(p.stem): p for p in (gt_root / source.name / 'gt').glob('*.png') if p.stem.isdigit()}
+        reference_dir = (
+            gt_root / 'GT' / source.parent.name / source.name
+            if args.hierarchical else gt_root / source.name / 'gt'
+        )
+        references = {int(p.stem): p for p in reference_dir.glob('*.png') if p.stem.isdigit()}
         ids = sorted(predictions)
         if not references or set(ids) - set(references):
             raise ValueError(f'Missing GT for {source.name}')
@@ -52,6 +67,8 @@ def main():
         raise ValueError('No generated sequences found')
     if args.sequences and {record[0] for record in records} != set(args.sequences):
         raise ValueError('Some requested sequences were not found')
+    if len({record[0] for record in records}) != len(records):
+        raise ValueError('Duplicate sequence names across class directories')
     with tempfile.TemporaryDirectory(prefix='flat_sequence_metrics_') as temporary:
         stage = Path(temporary)
         provenance = []
@@ -65,7 +82,13 @@ def main():
                     size = image.size
                 (sequence / 'final' / f'{frame_id:06d}.png').symlink_to(pred_path)
                 with Image.open(references[frame_id]) as image:
-                    image.convert('RGB').resize(size, Image.Resampling.BILINEAR).save(sequence / 'gt' / f'{frame_id:06d}.png')
+                    if args.require_native_size and image.size != size:
+                        raise ValueError(f'Prediction/GT size mismatch: {name}/{frame_id:06d}: {size} vs {image.size}')
+                    gt_stage = sequence / 'gt' / f'{frame_id:06d}.png'
+                    if image.size == size and image.mode == 'RGB':
+                        gt_stage.symlink_to(references[frame_id])
+                    else:
+                        image.convert('RGB').resize(size, Image.Resampling.BILINEAR).save(gt_stage)
             (sequence / 'clip_metrics.json').write_text(json.dumps({'video': name, 'frame_ids': ids}))
             provenance.append({'sequence': name, 'evaluated_frames': len(ids),
                                'expected_frames': len(references), 'complete_sequence': complete,
@@ -80,7 +103,12 @@ def main():
         shutil.move(str(metrics), str(output))
         (output / 'source.json').write_text(json.dumps({
             'eval_root': str(eval_root), 'gt_root': str(gt_root),
-            'gt_preprocessing': 'PIL RGB bilinear resize to generated resolution, matching shared_bg_noise_training.py',
+            'hierarchical': args.hierarchical,
+            'gt_preprocessing': (
+                'Native-size required; matching RGB GT PNGs used byte-for-byte'
+                if args.require_native_size else
+                'PIL RGB bilinear resize to generated resolution when needed, matching shared_bg_noise_training.py'
+            ),
             'source_pngs_preserved': True, 'sequences': provenance,
             'aggregate_scope': 'ALL aggregates available frames, including any incomplete sequences'
         }, indent=2) + '\n')
