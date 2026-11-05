@@ -33,7 +33,7 @@ def main():
     if len(set(args.gpus)) != 2:
         raise ValueError("Two distinct GPUs required")
     baseline = json.loads((BASELINE / "run_config.json").read_text())
-    evaluator = ROOT / "examples/brushnet/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
+    evaluator = ROOT / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
     # All consumers use exactly the same implementation as the x1 experiment.
     for name, digest in baseline["source_sha256"].items():
         if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != digest:

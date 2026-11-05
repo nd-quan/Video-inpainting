@@ -13,10 +13,10 @@ import sys
 from datetime import datetime
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 DATASET = BRUSHNET / "examples/brushnet/dataset/original_size"
 OUTPUT = BRUSHNET / "experiments/eval_fixedBG_temporal_v7_student_original_rgb_aligned_s1e-4_steps25-34"
-EVALUATOR = Path(__file__).with_name("test_brushnet_fixedBG_temporal_v7_student_original_size.py")
+EVALUATOR = BRUSHNET / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_temporal_v7_student_original_size.py"
 PYTHON = Path("/home/cilab/ndquan/envs/guided_diff/bin/python")
 STUDENT = BRUSHNET / "experiments/train_v7_raft_student_flow/checkpoint-0004750/raft_student"
 GPUS = tuple(range(6))

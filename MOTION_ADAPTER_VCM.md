@@ -79,9 +79,9 @@ dominating after the predicted-clean conversion.
   warp, confidence-gated residual adapters, and CFG-safe clip reshaping.
 - `examples/brushnet/diffusers/models/motion_adapter_training.py`: frozen
   BrushNet/U-Net path and temporal loss.
-- `examples/brushnet/motion_adapter_dataset.py`: sequential VCM clips,
+- `examples/brushnet/training/motion_adapter_dataset.py`: sequential VCM clips,
   refined flows, and confidence maps.
-- `examples/brushnet/train_motion_adapter_vcm.py`: AMP training, validation,
+- `examples/brushnet/training/train_motion_adapter_vcm.py`: AMP training, validation,
   TensorBoard, checkpointing, and resume.
 - `examples/brushnet/configs/train_vcm_motion_adapter.json`: first experiment.
 - `examples/brushnet/diffusers/pipelines/brushnet/pipeline_brushnet_sharedNoise_sameBG_v0_0.py`:
@@ -130,7 +130,7 @@ cd /home/cilab/ndquan/videoInpainting/code/BrushNet
 CUDA_VISIBLE_DEVICES=2 \
 PYTHONPATH=. \
 /home/cilab/ndquan/envs/guided_diff/bin/python \
-  examples/brushnet/train_motion_adapter_vcm.py \
+  examples/brushnet/training/train_motion_adapter_vcm.py \
   --config examples/brushnet/configs/train_vcm_motion_adapter_smoke.json
 ```
 
@@ -163,7 +163,7 @@ Resume:
 CUDA_VISIBLE_DEVICES=2 \
 PYTHONPATH=. \
 /home/cilab/ndquan/envs/guided_diff/bin/python \
-  examples/brushnet/train_motion_adapter_vcm.py \
+  examples/brushnet/training/train_motion_adapter_vcm.py \
   --config examples/brushnet/configs/train_vcm_motion_adapter.json \
   --resume /absolute/path/to/checkpoint-0000500
 ```
@@ -181,7 +181,7 @@ CUDA_VISIBLE_DEVICES=1,2 \
 torchrun \
   --standalone \
   --nproc_per_node=2 \
-  examples/brushnet/train_motion_adapter_vcm.py \
+  examples/brushnet/training/train_motion_adapter_vcm.py \
   --config examples/brushnet/configs/train_vcm_motion_adapter_2gpu_smoke.json
 ```
 

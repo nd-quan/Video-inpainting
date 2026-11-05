@@ -1,6 +1,11 @@
 # CUDA_VISIBLE_DEVICES=0 python /home/gpu_03/nas_naeun/BrushNet/examples/brushnet/subset_test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion.py
 # conda activate brushnet_ipadapter
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # examples/brushnet: shared modules and local diffusers/ip_adapter
+
 import os
 from glob import glob
 from tqdm import tqdm

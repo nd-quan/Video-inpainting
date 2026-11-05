@@ -143,7 +143,7 @@ CGE_VCMRS_AUTO_DESCRIPTORS=1 \
 CGE_VCMRS_ROOT=/home/cilab/ndquan/vcm-rs \
 CGE_VCMRS_PYTHON=/home/cilab/ndquan/envs/vcm/bin/python \
 CGE_VCMRS_CUDA_VISIBLE_DEVICES=3 \
-python test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_CGE_v0_2_.py
+python inference_experiments/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_CGE_v0_2_.py
 ```
 
 `CGE_MAX_EVALS=1` là một CGE evaluation và tương ứng 6 lần encode. Đặt `-1` hoặc bỏ biến để chạy theo toàn bộ lịch. Có thể giảm chi phí bằng:

@@ -16,10 +16,11 @@ import time
 
 from PIL import Image
 
-from videoInpainting.code.BrushNet.examples.brushnet.original_res_exp.run_sfu_bg48_table_window_bvi_ckpt2000_rgb_tg import (
+from run_sfu_bg48_table_window_bvi_ckpt2000_rgb_tg import (
     BRUSHNET, CHECKPOINT, DATASET, EVALUATOR, OUTPUT, PYTHON, STUDENT,
     expected_and_existing, gpu_memory, minimum_free_mib, save_json,
 )
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sfu_long_test_loader import load_sequences
 
 

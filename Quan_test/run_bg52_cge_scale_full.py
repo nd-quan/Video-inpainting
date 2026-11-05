@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / "experiments/EVAL_FOR_FINAL/eval_bg52_sn2250_cge_then_tg_equivclean_C25-40_T25-40_cge1em4_tg0p1_v7student_512"
 PILOT = ROOT / "experiments/EVAL_FOR_FINAL/ablation_bg52_cge_x3_x10_tg0p1_C25-40_T25-40_Traffic4"
 OUTPUT = ROOT / "experiments/EVAL_FOR_FINAL/ablation_bg52_cge_x3_x10_tg0p1_C25-40_T25-40_FULL"
-EVALUATOR = ROOT / "examples/brushnet/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
+EVALUATOR = ROOT / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
 
 
 def now():

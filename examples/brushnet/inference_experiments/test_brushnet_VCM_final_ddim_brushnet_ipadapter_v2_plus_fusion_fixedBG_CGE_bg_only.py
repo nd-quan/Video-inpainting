@@ -12,9 +12,14 @@ the scheduler's direct image-space fidelity term.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-import code.BrushNet.examples.brushnet.inference_experiments.test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_CGE_v0_2_ as dual_cge
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # examples/brushnet: shared modules and local diffusers/ip_adapter
+
+from pathlib import Path
+
+import test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_CGE_v0_2_ as dual_cge
 from vcmrs_codec_adapter import VCMRSBackgroundOnlyCodec
 
 

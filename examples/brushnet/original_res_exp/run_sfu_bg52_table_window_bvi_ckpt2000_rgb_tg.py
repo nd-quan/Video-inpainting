@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import videoInpainting.code.BrushNet.examples.brushnet.original_res_exp.run_sfu_bg52_table_window_sn2250_rgb_tg as evaluation
+import run_sfu_bg52_table_window_sn2250_rgb_tg as evaluation
 
 
 evaluation.CHECKPOINT = (

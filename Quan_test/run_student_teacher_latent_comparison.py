@@ -17,7 +17,7 @@ REFERENCE = ROOT / "experiments/eval_temporal_guidance_rgb_vs_latent_student_s0p
 DEFAULT_OUT = ROOT / "experiments/eval_temporal_guidance_student_vs_teacher_latent_s0p1_20260929"
 DEFAULT_CKPT = ROOT / "experiments/train_sharedNoise_sameBG_0.95_T8/checkpoint-2250"
 STUDENT = ROOT / "experiments/train_v7_raft_student_flow/checkpoint-0004750/raft_student"
-INFERENCE = EXAMPLES / "test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py"
+INFERENCE = EXAMPLES / "inference_experiments" / "test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py"
 METRICS = ROOT / "Quan_test/evaluate_flat_sequence_metrics.py"
 
 

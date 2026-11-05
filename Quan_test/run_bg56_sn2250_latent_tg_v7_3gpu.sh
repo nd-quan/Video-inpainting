@@ -22,7 +22,7 @@ export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 PYTHONUNBUFFERED=1
 
 cd "${BRUSHNET_ROOT}"
 mkdir -p "${OUTPUT_ROOT}/terminal_logs"
-evaluator=examples/brushnet/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py
+evaluator=examples/brushnet/inference_experiments/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py
 PREFLIGHT_ONLY=1 "${PYTHON_BIN}" -u "${evaluator}" \
   > "${OUTPUT_ROOT}/terminal_logs/preflight.log" 2>&1
 

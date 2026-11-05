@@ -27,7 +27,7 @@ CHECKPOINT = Path(
     "finetune_coco_bg52_native_area_bucket_ckpt200000_3000steps/checkpoint-6000"
 )
 OUTPUT = BRUSHNET / "experiments/eval_sfu_hw_bg52_coco6000_no_shared_no_temporal_small512"
-EVALUATOR = BRUSHNET / "examples/brushnet/test_brushnet_fixedBG_temporal_v7_student_original_size.py"
+EVALUATOR = BRUSHNET / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_temporal_v7_student_original_size.py"
 PYTHON = Path("/home/cilab/ndquan/envs/guided_diff/bin/python")
 GPUS = tuple(int(value) for value in os.environ.get("SFU_EVAL_GPUS", "3,4,5").split(","))
 GPU_MEMORY_CEILING_MIB = 47000

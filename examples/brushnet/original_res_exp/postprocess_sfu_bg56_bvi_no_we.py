@@ -19,7 +19,7 @@ import numpy as np
 from PIL import Image
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 EVAL = BRUSHNET / "experiments/eval_sfu_bg56_table_window_bvi_ckpt2000_rgb_tg"
 DATASET = Path("/home/cilab/ndquan/vcm-rs/output/sfu_qp0_bg_table_window_test/bg56/test")
 SOURCE_MANIFEST = Path(

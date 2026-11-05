@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 PROJECT = Path("/home/cilab/ndquan/vcm-rs")
 DATASET = PROJECT / "output/sfu_qp0_bg_table_window_test/bg52/test"
 SOURCE_MANIFEST = PROJECT / "output/postprocess_sfu_full_qp0_bg_multiqp/05_table_window/manifest.json"

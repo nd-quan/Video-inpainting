@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(BRUSHNET / "Quan_test"))
 from evaluate_temporal_metrics import compute_flow, read_rgb, warp_with_flow
 

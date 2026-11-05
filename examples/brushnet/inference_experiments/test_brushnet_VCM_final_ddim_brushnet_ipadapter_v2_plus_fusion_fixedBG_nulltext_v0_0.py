@@ -7,6 +7,11 @@ Main difference from the caption-based test script:
   - This matches the null-text conditioning used in train_brushnet_VCM_ipadapter_v8_coco_nulltext.py.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # examples/brushnet: shared modules and local diffusers/ip_adapter
+
 import argparse
 import json
 import os

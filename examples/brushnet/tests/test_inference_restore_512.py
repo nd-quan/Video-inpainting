@@ -1,6 +1,7 @@
 """Native ROI and eval-compatibility contracts for the deployment entry point."""
 import ast
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -9,12 +10,14 @@ import cv2
 import numpy as np
 from PIL import Image
 
-import videoInpainting.code.BrushNet.examples.brushnet.inference.inference_restore_512 as deployment
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "inference"))
+import restoration_engine as deployment
 
 
 class InferenceContracts(unittest.TestCase):
     def test_512_blend_matches_existing_evaluator_exactly(self):
-        source = deployment.SCRIPT_DIR / "test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
+        source = (deployment.BRUSHNET_EXAMPLES / "inference_experiments"
+                  / "test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py")
         function = next(n for n in ast.parse(source.read_text()).body
                         if isinstance(n, ast.FunctionDef) and n.name == "blend_with_input")
         scope = {"cv2": cv2, "np": np, "Image": Image}

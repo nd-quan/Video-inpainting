@@ -47,7 +47,7 @@ export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 PYTHONUNBUFFERED=1
 unset SEQUENCES
 
 cd "${BRUSHNET_ROOT}"
-pipeline=examples/brushnet/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0_postprocess_native_roi_video.py
+pipeline=examples/brushnet/inference_experiments/test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0_postprocess_native_roi_video.py
 for required in \
     "${CHECKPOINT_DIR}/brushnet/config.json" \
     "${CHECKPOINT_DIR}/brushnet/diffusion_pytorch_model.safetensors" \

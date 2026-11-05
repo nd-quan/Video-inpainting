@@ -6,10 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-import videoInpainting.code.BrushNet.examples.brushnet.original_res_exp.postprocess_sfu_bg48_bvi as workflow
+import postprocess_sfu_bg48_bvi as workflow
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 EVAL = BRUSHNET / "experiments/eval_sfu_bg52_table_window_sn2250_rgb_tg"
 
 

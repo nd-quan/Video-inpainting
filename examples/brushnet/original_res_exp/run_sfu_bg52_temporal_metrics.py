@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 DATASET = Path("/home/cilab/ndquan/vcm-rs/output/sfu_qp0_bg_table_window_test/bg52/test")
 EVAL = BRUSHNET / "experiments/eval_sfu_bg52_table_window_ckpt1000_rgb_tg"
 OUTPUT = EVAL / "metrics_temporal_png"

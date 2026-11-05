@@ -16,7 +16,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / "experiments/EVAL_FOR_FINAL/eval_bg52_sn2250_cge_then_tg_equivclean_C25-40_T25-40_cge1em4_tg0p1_v7student_512/run_config.json"
-EVALUATOR = ROOT / "examples/brushnet/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
+EVALUATOR = ROOT / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"
 SCHEDULER = ROOT / "examples/brushnet/diffusers/schedulers/scheduling_ddim_cge_then_temporal.py"
 OUTPUT = ROOT / "experiments/EVAL_FOR_FINAL/eval_bg52_sn2250_cge_then_tg_equivclean_C25only_T25only_cge1em3_tg0p1_v7student_512"
 

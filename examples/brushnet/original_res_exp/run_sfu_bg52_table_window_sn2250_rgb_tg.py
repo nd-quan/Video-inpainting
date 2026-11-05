@@ -15,15 +15,16 @@ import time
 
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sfu_long_test_loader import load_sequences
 
 
-BRUSHNET = Path(__file__).resolve().parents[2]
+BRUSHNET = Path(__file__).resolve().parents[3]
 DATASET = Path("/home/cilab/ndquan/vcm-rs/output/sfu_qp0_bg_table_window_test/bg52/test")
 CHECKPOINT = BRUSHNET / "experiments/train_sharedNoise_sameBG_0.95_T8/checkpoint-2250"
 STUDENT = BRUSHNET / "experiments/train_v7_raft_student_flow/checkpoint-0004750/raft_student"
 OUTPUT = BRUSHNET / "experiments/eval_sfu_bg52_table_window_sn2250_rgb_tg"
-EVALUATOR = Path(__file__).with_name("test_brushnet_fixedBG_temporal_v7_student_original_size.py")
+EVALUATOR = BRUSHNET / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_temporal_v7_student_original_size.py"
 PYTHON = Path("/home/cilab/ndquan/envs/guided_diff/bin/python")
 GPUS = tuple(int(value.strip()) for value in os.environ.get(
     "SFU_EVAL_GPUS", "0,1,2,3,4,5"

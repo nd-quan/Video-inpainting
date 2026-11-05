@@ -6,6 +6,11 @@
 ########## 그 중에서 v2는 ip_adapter 폴더에서 불러오고 v3는 diffuser안에 구현된 load_ipadapter로
 # v3는 v2가 잘 나와서 구현 안함
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # examples/brushnet: shared modules and local diffusers/ip_adapter
+
 import json
 import time
 from datetime import datetime

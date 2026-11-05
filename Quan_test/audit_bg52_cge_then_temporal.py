@@ -151,7 +151,7 @@ def main():
 
     # Patch only this diagnostic process; the four evaluation workers are untouched.
     sequential.CGEThenTemporalDDIMScheduler = AuditScheduler
-    runpy.run_path(str(ROOT / "examples/brushnet/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean.py"), run_name="__main__")
+    runpy.run_path(str(ROOT / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean.py"), run_name="__main__")
 
 
 if __name__ == "__main__":

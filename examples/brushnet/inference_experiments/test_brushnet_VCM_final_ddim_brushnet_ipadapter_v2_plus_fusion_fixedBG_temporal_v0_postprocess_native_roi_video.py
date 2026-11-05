@@ -10,6 +10,11 @@ from already-generated 512x512 PNGs.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # examples/brushnet: shared modules and local diffusers/ip_adapter
+
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
@@ -30,7 +35,7 @@ from sfu_long_test_loader import load_sequences, parse_sequence_names, print_pre
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
+REPO_ROOT = SCRIPT_DIR.parents[2]
 INFERENCE_SCRIPT = SCRIPT_DIR / "test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py"
 FPS = {
     "PeopleOnStreet": 30, "BQTerrace": 60, "BasketballDrive": 50,
@@ -230,7 +235,7 @@ def main():
 
     if not args.postprocess_only:
         env = os.environ.copy()
-        proposed_dir = str(SCRIPT_DIR / "proposed")
+        proposed_dir = str(SCRIPT_DIR.parent / "proposed")
         python_path = env.get("PYTHONPATH", "")
         path_parts = [part for part in python_path.split(os.pathsep) if part]
         if proposed_dir not in path_parts:

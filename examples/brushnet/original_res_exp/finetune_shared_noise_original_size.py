@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+import sys
 
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shared_bg_noise_training import (
     HierarchicalV8ClipDataset,
     collate_shared_noise_clips,
@@ -30,7 +32,7 @@ from shared_bg_noise_training import (
 )
 
 HERE = Path(__file__).resolve().parent
-EXPERIMENTS = HERE.parents[1] / "experiments"
+EXPERIMENTS = HERE.parents[2] / "experiments"
 DEFAULT_CHECKPOINT = EXPERIMENTS / "train_sharedNoise_sameBG_0.95_T8/checkpoint-2250"
 
 
@@ -214,7 +216,7 @@ def parse_args():
     parser.add_argument("--train_split", default="train", choices=["train", "valid", "test"])
     parser.add_argument("--include_branches", nargs="+", default=None)
     parser.add_argument("--initial_checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--pretrained_model", type=Path, default=HERE / "base_model/stable-diffusion-v1-5/stable-diffusion-v1-5")
+    parser.add_argument("--pretrained_model", type=Path, default=HERE.parent / "base_model/stable-diffusion-v1-5/stable-diffusion-v1-5")
     parser.add_argument("--image_encoder", default="laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
     parser.add_argument("--output_dir", type=Path, default=EXPERIMENTS / "finetune_shared_noise_original_size")
     parser.add_argument("--clip_length", type=int, default=4)
@@ -268,6 +270,8 @@ def parse_args():
 
 def build_models(args):
     # Import existing architecture/loaders without executing its training main().
+    import sys
+    sys.path.insert(0, str(HERE.parent / "training"))
     import train_brushnet_VCM_ipadapter_v8_coco_nulltext_sharedNoise_sameBG_v0_0 as legacy
     from safetensors.torch import load_file
 

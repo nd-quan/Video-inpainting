@@ -12,8 +12,9 @@ from PIL import Image
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR / "inference_experiments"))
 from sfu_long_test_loader import load_sequences
-from code.BrushNet.examples.brushnet.inference_experiments.test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0_postprocess_native_roi_video import (
+from test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0_postprocess_native_roi_video import (
     postprocess_sequence,
     verify_source_frames,
 )

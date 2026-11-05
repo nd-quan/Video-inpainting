@@ -148,7 +148,7 @@ def main():
                ROOT / "examples/brushnet/diffusers/schedulers/scheduling_ddim_CGE.py",
                ROOT / "examples/brushnet/diffusers/schedulers/scheduling_ddim_cge_then_temporal.py",
                ROOT / "examples/brushnet/diffusers/schedulers/scheduling_ddim_cge_temporal.py",
-               ROOT / "examples/brushnet/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"]
+               ROOT / "examples/brushnet/inference_experiments/test_brushnet_fixedBG_cge_then_temporal_equivalent_clean_timed.py"]
     report = {"passed": passed, "scope": "Same frozen first four Traffic frames at step 25; real VAE and real train_match codec. This validates one guided transition, not a full-rollout speed benchmark.",
               "frame_ids": [117, 118, 119, 120], "state": str(state_path), "cge_scale": 0.001, "tge_scale": 0.1,
               "codec_calls_per_variant": 12, "peak_calls": {str(k): v["peak_codec_calls"] for k, v in variants.items()},

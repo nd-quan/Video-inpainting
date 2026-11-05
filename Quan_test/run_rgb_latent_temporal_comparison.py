@@ -14,7 +14,7 @@ EXAMPLES = BRUSHNET / "examples" / "brushnet"
 DATASET_ROOT = EXAMPLES / "dataset"
 CHECKPOINT = BRUSHNET / "experiments" / "train_sharedNoise_sameBG_0.95_T8" / "checkpoint-2250"
 STUDENT = BRUSHNET / "experiments" / "train_v7_raft_student_flow" / "checkpoint-0004750" / "raft_student"
-INFERENCE = EXAMPLES / "test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py"
+INFERENCE = EXAMPLES / "inference_experiments" / "test_brushnet_VCM_final_ddim_brushnet_ipadapter_v2_plus_fusion_fixedBG_temporal_v0.py"
 METRICS = BRUSHNET / "Quan_test" / "evaluate_flat_sequence_metrics.py"
 
 

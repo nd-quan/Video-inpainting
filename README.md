@@ -163,7 +163,7 @@ You can train with segmentation mask using the script:
 
 ```
 # sd v1.5
-accelerate launch examples/brushnet/train_brushnet.py \
+accelerate launch examples/brushnet/upstream/train_brushnet.py \
 --pretrained_model_name_or_path runwayml/stable-diffusion-v1-5 \
 --output_dir runs/logs/brushnet_segmentationmask \
 --train_data_dir data/BrushData \
@@ -177,7 +177,7 @@ accelerate launch examples/brushnet/train_brushnet.py \
 --checkpointing_steps 10000 
 
 # sdxl
-accelerate launch examples/brushnet/train_brushnet_sdxl.py \
+accelerate launch examples/brushnet/upstream/train_brushnet_sdxl.py \
 --pretrained_model_name_or_path stabilityai/stable-diffusion-xl-base-1.0 \
 --output_dir runs/logs/brushnetsdxl_segmentationmask \
 --train_data_dir data/BrushData \
@@ -198,7 +198,7 @@ You can train with random mask using the script (by adding `--random_mask`):
 
 ```
 # sd v1.5
-accelerate launch examples/brushnet/train_brushnet.py \
+accelerate launch examples/brushnet/upstream/train_brushnet.py \
 --pretrained_model_name_or_path runwayml/stable-diffusion-v1-5 \
 --output_dir runs/logs/brushnet_randommask \
 --train_data_dir data/BrushData \
@@ -212,7 +212,7 @@ accelerate launch examples/brushnet/train_brushnet.py \
 --random_mask
 
 # sdxl
-accelerate launch examples/brushnet/train_brushnet_sdxl.py \
+accelerate launch examples/brushnet/upstream/train_brushnet_sdxl.py \
 --pretrained_model_name_or_path stabilityai/stable-diffusion-xl-base-1.0 \
 --output_dir runs/logs/brushnetsdxl_randommask \
 --train_data_dir data/BrushData \
@@ -247,7 +247,7 @@ You can also inference through gradio demo:
 
 ```
 # sd v1.5
-python examples/brushnet/app_brushnet.py
+python examples/brushnet/upstream/app_brushnet.py
 ```
 
 
@@ -256,7 +256,7 @@ python examples/brushnet/app_brushnet.py
 You can evaluate using the script:
 
 ```
-python examples/brushnet/evaluate_brushnet.py \
+python examples/brushnet/upstream/evaluate_brushnet.py \
 --brushnet_ckpt_path data/ckpt/segmentation_mask_brushnet_ckpt \
 --image_save_path runs/evaluation_result/BrushBench/brushnet_segmask/inside \
 --mapping_file data/BrushBench/mapping_file.json \
