@@ -13,21 +13,24 @@
 # Example (after checking the GPUs are free):
 #   CUDA_VISIBLE_DEVICES=0 bash run_train_latent_warp_v1_run1.sh
 # Run-0 baseline with identical data/steps:
-#   LATENT_WARP_DROP_PROB=1.0 OUTPUT_DIR=/user/Cilab/Quan/experiment/latent_warp_run0/train \
+#   LATENT_WARP_DROP_PROB=1.0 OUTPUT_DIR=/media/ssd1/ndquan/video-inpainting/code/experiments/latent_warp_run0/train \
 #   CUDA_VISIBLE_DEVICES=0 bash run_train_latent_warp_v1_run1.sh
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BRUSHNET_DIR="$(cd -- "${HERE}/../.." && pwd)"
+PROJECT_ROOT="$(cd -- "${BRUSHNET_DIR}/../../.." && pwd)"
+export HF_HOME="${PROJECT_ROOT}/code/hf_cache"
+export HF_HUB_CACHE="${HF_HOME}/hub"
 TRAIN_SCRIPT="${HERE}/train_brushnet_latent_warp_v1.py"
-ACCELERATE_BIN="${ACCELERATE_BIN:-/home/cilab/ndquan/envs/guided_diff/bin/accelerate}"
+ACCELERATE_BIN="${ACCELERATE_BIN:-/media/ssd1/ndquan/anaconda3/envs/guided_diff/bin/accelerate}"
 
 PRETRAINED_MODEL="${PRETRAINED_MODEL:-${BRUSHNET_DIR}/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5}"
-DATASET_ROOT="${DATASET_ROOT:-/home/cilab/ndquan/vcm-rs/output/bvi_dvc_part1_qp0_bg_train/bg52}"
+DATASET_ROOT="${DATASET_ROOT:-${BRUSHNET_DIR}/dataset/bg52}"
 TRAIN_SPLIT="${TRAIN_SPLIT:-train}"
-TEACHER_FLOW_ROOT="${TEACHER_FLOW_ROOT:-/user/Cilab/Quan/experiment/flows/bvi_dvc_bg52_512}"
-INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-/user/Cilab/Quan/experiment/latent_warp_run1/init_T8_ckpt2250_14ch}"
-OUTPUT_DIR="${OUTPUT_DIR:-/user/Cilab/Quan/experiment/latent_warp_run1/train}"
+TEACHER_FLOW_ROOT="${TEACHER_FLOW_ROOT:-${PROJECT_ROOT}/flow-training/flows/bvi_dvc_bg52_512}"
+INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-${PROJECT_ROOT}/code/checkpoints/init_T8_ckpt2250_14ch}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/code/experiments/latent_warp_run1/train}"
 
 MIXED_PRECISION="${MIXED_PRECISION:-fp16}"
 RESOLUTION="${RESOLUTION:-512}"

@@ -196,3 +196,7 @@ tags
 
 # wandb
 wandb
+
+/hf_cache/
+/checkpoints/
+/examples/brushnet/dataset/bg52/
