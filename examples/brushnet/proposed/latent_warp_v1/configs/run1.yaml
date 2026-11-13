@@ -1,0 +1,80 @@
+# CLI > environment overrides > YAML > trainer defaults.
+# Diffusion fields assert the pretrained schedule; they do not silently replace it.
+paths:
+  pretrained_model_name_or_path: /media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5
+  cache_dir: null  # Hugging Face default cache
+  image_encoder_name_or_path: laion/CLIP-ViT-H-14-laion2B-s32B-b79K
+  brushnet_model_name_or_path: /media/ssd1/ndquan/videoInpainting/code/BrushNet/experiments/latent_warp/init_ckpt/brushnet
+  pretrained_ip_adapter_path: /media/ssd1/ndquan/videoInpainting/code/BrushNet/experiments/latent_warp/init_ckpt/ipadapter/model.safetensors
+  fusion_module_path: /media/ssd1/ndquan/videoInpainting/code/BrushNet/experiments/latent_warp/init_ckpt/ipadapter/fusion_module.safetensors
+  coco_train_root: /media/ssd1/ndquan/videoInpainting/code/BrushNet/examples/brushnet/dataset/train
+  teacher_flow_root: /media/ssd1/ndquan/videoInpainting/code/flow-training/bvi_dvc_bg52_512
+  output_dir: /media/ssd1/ndquan/videoInpainting/code/BrushNet/experiments/latent_warp_run1/train
+
+data:
+  dataset_layout: hierarchical
+  train_split: train
+  resolution: 512
+  clip_length: 8
+  clip_stride: 6
+  include_branches: null
+
+training:
+  train_batch_size: 1  # clips per GPU
+  gradient_accumulation_steps: 3
+  max_train_steps: 3000
+  learning_rate: 1.0e-5
+  scale_lr: false
+  lr_scheduler: constant
+  lr_warmup_steps: 500  # inactive with constant; use constant_with_warmup to enable
+  lr_num_cycles: 1
+  lr_power: 1.0
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_weight_decay: 0.01
+  adam_epsilon: 1.0e-8
+  enable_gradient_clipping: false  # preserves the previous training behavior
+  max_grad_norm: 1.0  # active only when enable_gradient_clipping=true
+  seed: 1234
+
+# Expected DDPM training schedule loaded from the pretrained model.
+diffusion:
+  expected_num_train_timesteps: 1000
+  expected_beta_schedule: scaled_linear
+  expected_beta_start: 0.00085
+  expected_beta_end: 0.012
+  expected_prediction_type: epsilon
+  timestep_sampling: uniform
+  independent_frame_timesteps: false
+
+shared_noise:
+  shared_bg_noise_strength: 0.95
+  sequence_shared_noise_refresh: epoch
+  variance_preserving_shared_noise: true
+  shared_bg_mask_threshold: 0.5
+
+latent_warp:
+  latent_warp_drop_prob: 0.0
+  latent_warp_x0_clamp: 0.0
+  expand_brushnet_conditioning: false
+  fusion_scale: 1.0
+
+execution:
+  mixed_precision: fp16
+  gradient_checkpointing: true
+  set_grads_to_none: true
+  dataloader_num_workers: 2
+  enable_xformers_memory_efficient_attention: false
+  allow_tf32: false
+
+logging:
+  checkpointing_steps: 250
+  report_to: tensorboard
+  logging_dir: logs
+  tracker_project_name: latent_warp_v1_run1
+
+# Used by the shell launcher. CUDA_VISIBLE_DEVICES must be selected explicitly.
+runtime:
+  accelerate_bin: /media/ssd1/ndquan/envs/guided_diff/bin/accelerate
+  cuda_visible_devices: null
+  allow_shared_gpu: false

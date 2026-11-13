@@ -16,7 +16,7 @@
 #   * loss, IP-Adapter, fusion module, shared BG noise: unchanged.
 #!/usr/bin/env python
 # coding=utf-8
-# env : /home/cilab/ndquan/envs/guided_diff
+# env : /media/ssd1/ndquan/envs/guided_diff
 import sys
 from pathlib import Path
 
@@ -29,6 +29,7 @@ for _path in (
     sys.path.insert(0, str(_path))
 
 import argparse
+from training_config import parse_configured_args, verify_diffusion, save_resolved_config
 import contextlib
 import gc
 import logging
@@ -113,10 +114,11 @@ DEFAULT_PRETRAINED_MODEL = os.path.join(
     "stable-diffusion-v1-5",
     "stable-diffusion-v1-5",
 )
-DEFAULT_COCO_TRAIN_ROOT = "/home/cilab/ndquan/vcm-rs/output/bvi_dvc_part1_qp0_bg_train/bg52"
-DEFAULT_TEACHER_FLOW_ROOT = "/user/Cilab/Quan/experiment/flows/bvi_dvc_bg52_512"
+REPO_DIR = Path(SCRIPT_DIR).parents[1]
+DEFAULT_COCO_TRAIN_ROOT = os.path.join(SCRIPT_DIR, "dataset", "train")
+DEFAULT_TEACHER_FLOW_ROOT = str(REPO_DIR.parent / "flow-training" / "bvi_dvc_bg52_512")
 DEFAULT_NULL_CAPTION_FILE = os.path.join(DEFAULT_COCO_TRAIN_ROOT, "caption_empty.txt")
-DEFAULT_INITIAL_CHECKPOINT = "/user/Cilab/Quan/experiment/latent_warp_run1/init_T8_ckpt2250_14ch"
+DEFAULT_INITIAL_CHECKPOINT = str(REPO_DIR / "experiments" / "latent_warp_run1" / "init_T8_ckpt2250_14ch")
 DEFAULT_BRUSHNET_CHECKPOINT = os.path.join(DEFAULT_INITIAL_CHECKPOINT, "brushnet")
 DEFAULT_IPADAPTER_CHECKPOINT = os.path.join(
     DEFAULT_INITIAL_CHECKPOINT, "ipadapter", "model.safetensors"
@@ -330,7 +332,7 @@ These are brushnet weights trained on {base_model} with new type of conditioning
     model_card.save(os.path.join(repo_folder, "README.md"))
 
 
-def parse_args(input_args=None):
+def parse_args(input_args=None, validate_paths=True):
     parser = argparse.ArgumentParser(description="Simple example of a BrushNet training script.")
     parser.add_argument(
         "--pretrained_model_name_or_path",
@@ -339,11 +341,17 @@ def parse_args(input_args=None):
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
+        "--image_encoder_name_or_path",
+        type=str,
+        default="laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+        help="CLIP vision model ID or local snapshot directory.",
+    )
+    parser.add_argument(
         "--brushnet_model_name_or_path",
         type=str,
         default=DEFAULT_BRUSHNET_CHECKPOINT,
         help="Path to pretrained brushnet model or model identifier from huggingface.co/models."
-        " Defaults to the local V8 checkpoint-2000 BrushNet. If not specified brushnet weights are initialized from unet.",
+        " Requires the T8 checkpoint-2250 init widened to 14 inputs (conditioning_channels=10).",
     )
     parser.add_argument(
         "--coco_train_root",
@@ -468,7 +476,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="brushnet-model-shared-noise-same-bg",
+        default=str(REPO_DIR / "experiments" / "latent_warp_run1" / "train"),
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -817,10 +825,18 @@ def parse_args(input_args=None):
         help="Optional Class/sequence subset (debug / dry runs).",
     )
 
-    if input_args is not None:
-        args = parser.parse_args(input_args)
-    else:
-        args = parser.parse_args()
+    parser.add_argument("--expected_num_train_timesteps", type=int, default=1000)
+    parser.add_argument("--expected_beta_schedule", default="scaled_linear")
+    parser.add_argument("--expected_beta_start", type=float, default=0.00085)
+    parser.add_argument("--expected_beta_end", type=float, default=0.012)
+    parser.add_argument("--expected_prediction_type", choices=("epsilon", "v_prediction"), default="epsilon")
+    parser.add_argument("--timestep_sampling", choices=("uniform",), default="uniform")
+    parser.add_argument("--enable_gradient_clipping", action="store_true")
+    args = parse_configured_args(parser, input_args)
+    if args.enable_gradient_clipping and args.max_grad_norm <= 0:
+        parser.error("--max_grad_norm must be positive when gradient clipping is enabled")
+    if not validate_paths:
+        return args
 
     # if args.dataset_name is None and args.train_data_dir is None:
     #     raise ValueError("Specify either `--dataset_name` or `--train_data_dir`")
@@ -1151,6 +1167,7 @@ def main(args):
 
     # Load scheduler and models
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+    verify_diffusion(args, noise_scheduler)
     text_encoder = text_encoder_cls.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
     )
@@ -1161,7 +1178,7 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
     )
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-    "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        args.image_encoder_name_or_path, cache_dir=args.cache_dir
     )
     if not args.brushnet_model_name_or_path:
         raise ValueError("latent_warp_v1 requires --brushnet_model_name_or_path (Phase-1 14-channel init).")
@@ -1358,12 +1375,12 @@ def main(args):
         optimizer_class = torch.optim.AdamW
 
     # Optimizer creation
-    params_to_optimize = itertools.chain(
+    params_to_optimize = list(itertools.chain(
         image_proj_model.parameters(),
         adapter_modules.parameters(),
         fusion_module.parameters(),
         brushnet.parameters()
-    )
+    ))
     # params_to_optimize=fusion_module.parameters()
     optimizer = torch.optim.AdamW(
         params_to_optimize,
@@ -1468,7 +1485,8 @@ def main(args):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        tracker_config = dict(vars(args))
+        save_resolved_config(args, noise_scheduler, accelerator)
+        tracker_config = {k: v for k, v in vars(args).items() if not k.startswith("_") and k != "hub_token"}
 
         # tensorboard cannot handle list types for config
         tracker_config.pop("validation_prompt")
@@ -1887,8 +1905,8 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    # gradient 폭주 방지 코드(안정화땜에 굳이 없어도 되는데 넣음ㅎ)
-                    # accelerator.clip_grad_norm_(params_to_optimize, args.max_grad_norm)
+                    if args.enable_gradient_clipping:
+                        accelerator.clip_grad_norm_(params_to_optimize, args.max_grad_norm)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=args.set_grads_to_none)

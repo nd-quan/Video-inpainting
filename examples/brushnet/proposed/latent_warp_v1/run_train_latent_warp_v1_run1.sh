@@ -12,66 +12,62 @@
 #
 # Example (after checking the GPUs are free):
 #   CUDA_VISIBLE_DEVICES=0 bash run_train_latent_warp_v1_run1.sh
-# Run-0 baseline with identical data/steps:
-#   LATENT_WARP_DROP_PROB=1.0 OUTPUT_DIR=/user/Cilab/Quan/experiment/latent_warp_run0/train \
-#   CUDA_VISIBLE_DEVICES=0 bash run_train_latent_warp_v1_run1.sh
+# Run-0 baseline: use --config /absolute/path/to/configs/run0.yaml
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BRUSHNET_DIR="$(cd -- "${HERE}/../.." && pwd)"
+REPO_DIR="$(cd -- "${BRUSHNET_DIR}/../.." && pwd)"
 TRAIN_SCRIPT="${HERE}/train_brushnet_latent_warp_v1.py"
-ACCELERATE_BIN="${ACCELERATE_BIN:-/home/cilab/ndquan/envs/guided_diff/bin/accelerate}"
-
-PRETRAINED_MODEL="${PRETRAINED_MODEL:-${BRUSHNET_DIR}/base_model/stable-diffusion-v1-5/stable-diffusion-v1-5}"
-DATASET_ROOT="${DATASET_ROOT:-/home/cilab/ndquan/vcm-rs/output/bvi_dvc_part1_qp0_bg_train/bg52}"
-TRAIN_SPLIT="${TRAIN_SPLIT:-train}"
-TEACHER_FLOW_ROOT="${TEACHER_FLOW_ROOT:-/user/Cilab/Quan/experiment/flows/bvi_dvc_bg52_512}"
-INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-/user/Cilab/Quan/experiment/latent_warp_run1/init_T8_ckpt2250_14ch}"
-OUTPUT_DIR="${OUTPUT_DIR:-/user/Cilab/Quan/experiment/latent_warp_run1/train}"
-
-MIXED_PRECISION="${MIXED_PRECISION:-fp16}"
-RESOLUTION="${RESOLUTION:-512}"
-CLIP_LENGTH="${CLIP_LENGTH:-8}"
-CLIP_STRIDE="${CLIP_STRIDE:-6}"
-CLIPS_PER_DEVICE="${CLIPS_PER_DEVICE:-1}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-3}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-3000}"
-CHECKPOINTING_STEPS="${CHECKPOINTING_STEPS:-250}"
-LEARNING_RATE="${LEARNING_RATE:-1e-5}"
-LR_SCHEDULER="${LR_SCHEDULER:-constant}"
-LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-500}"  # unused by the constant scheduler (kept = T8)
-SHARED_BG_NOISE_STRENGTH="${SHARED_BG_NOISE_STRENGTH:-0.95}"
-SEQUENCE_SHARED_NOISE_REFRESH="${SEQUENCE_SHARED_NOISE_REFRESH:-epoch}"
-LATENT_WARP_DROP_PROB="${LATENT_WARP_DROP_PROB:-0.0}"
-LATENT_WARP_X0_CLAMP="${LATENT_WARP_X0_CLAMP:-0}"
-SEED="${SEED:-1234}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-2}"
-ALLOW_SHARED_GPU="${ALLOW_SHARED_GPU:-0}"
+# One resolver is shared with the trainer: CLI > environment > YAML > defaults.
+PYTHON_BIN="${PYTHON_BIN:-/media/ssd1/ndquan/envs/guided_diff/bin/python}"
+SETTINGS="$("${PYTHON_BIN}" "${HERE}/training_config.py" "$@")"
+eval "${SETTINGS}"  # values are shell-quoted by shlex.quote
+export CUDA_VISIBLE_DEVICES
 PRINT_ONLY="${PRINT_ONLY:-0}"
+CHECK_PATHS_ONLY="${CHECK_PATHS_ONLY:-0}"
 
 # ---- inputs ---------------------------------------------------------------
 REQUIRED_PATHS=(
     "${TRAIN_SCRIPT}"
     "${ACCELERATE_BIN}"
-    "${PRETRAINED_MODEL}"
+    "${PRETRAINED_MODEL}/scheduler/scheduler_config.json"
+    "${PRETRAINED_MODEL}/tokenizer/vocab.json"
+    "${PRETRAINED_MODEL}/tokenizer/merges.txt"
+    "${PRETRAINED_MODEL}/text_encoder/config.json"
+    "${PRETRAINED_MODEL}/text_encoder/model.safetensors"
+    "${PRETRAINED_MODEL}/vae/config.json"
+    "${PRETRAINED_MODEL}/vae/diffusion_pytorch_model.safetensors"
+    "${PRETRAINED_MODEL}/unet/config.json"
+    "${PRETRAINED_MODEL}/unet/diffusion_pytorch_model.safetensors"
     "${DATASET_ROOT}/${TRAIN_SPLIT}/GT"
     "${DATASET_ROOT}/${TRAIN_SPLIT}/input"
     "${DATASET_ROOT}/${TRAIN_SPLIT}/mask"
     "${TEACHER_FLOW_ROOT}/metadata.json"
     "${TEACHER_FLOW_ROOT}/manifest.json"
-    "${INITIAL_CHECKPOINT}/brushnet/config.json"
-    "${INITIAL_CHECKPOINT}/ipadapter/model.safetensors"
-    "${INITIAL_CHECKPOINT}/ipadapter/fusion_module.safetensors"
+    "${BRUSHNET_CHECKPOINT}/config.json"
+    "${BRUSHNET_CHECKPOINT}/diffusion_pytorch_model.safetensors"
+    "${IPADAPTER_CHECKPOINT}"
+    "${FUSION_CHECKPOINT}"
 )
+MISSING=0
 for required_path in "${REQUIRED_PATHS[@]}"; do
     if [[ ! -e "${required_path}" ]]; then
         echo "Missing required path: ${required_path}" >&2
-        exit 1
+        MISSING=1
     fi
 done
-if ! grep -q '"conditioning_channels": 10' "${INITIAL_CHECKPOINT}/brushnet/config.json"; then
-    echo "${INITIAL_CHECKPOINT}/brushnet is not the 14-input init (conditioning_channels != 10)" >&2
+if [[ "${MISSING}" == "1" ]]; then
+    echo "Restore the missing files; the init must be the T8 checkpoint-2250 widened to 14 inputs." >&2
     exit 1
+fi
+if ! grep -Eq '"conditioning_channels"[[:space:]]*:[[:space:]]*10([[:space:]]*[,}]|[[:space:]]*$)' "${BRUSHNET_CHECKPOINT}/config.json"; then
+    echo "${BRUSHNET_CHECKPOINT} is not the 14-input init (conditioning_channels != 10)" >&2
+    exit 1
+fi
+if [[ "${CHECK_PATHS_ONLY}" == "1" ]]; then
+    echo "Required paths exist and BrushNet config declares conditioning_channels=10."
+    exit 0
 fi
 if [[ -e "${OUTPUT_DIR}" ]] && [[ -n "$(ls -A "${OUTPUT_DIR}" 2>/dev/null)" ]] && [[ "${PRINT_ONLY}" != "1" ]]; then
     echo "OUTPUT_DIR is not empty: ${OUTPUT_DIR} (choose a new OUTPUT_DIR; resume is not wired for run 1)" >&2
@@ -117,36 +113,8 @@ fi
 CMD=(
     "${ACCELERATE_BIN}" launch "${LAUNCH_ARGS[@]}"
     "${TRAIN_SCRIPT}"
-    --pretrained_model_name_or_path "${PRETRAINED_MODEL}"
-    --dataset_root "${DATASET_ROOT}"
-    --dataset_layout hierarchical
-    --train_split "${TRAIN_SPLIT}"
-    --teacher_flow_root "${TEACHER_FLOW_ROOT}"
-    --brushnet_model_name_or_path "${INITIAL_CHECKPOINT}/brushnet"
-    --pretrained_ip_adapter_path "${INITIAL_CHECKPOINT}/ipadapter/model.safetensors"
-    --fusion_module_path "${INITIAL_CHECKPOINT}/ipadapter/fusion_module.safetensors"
-    --output_dir "${OUTPUT_DIR}"
-    --resolution "${RESOLUTION}"
-    --clip_length "${CLIP_LENGTH}"
-    --clip_stride "${CLIP_STRIDE}"
-    --shared_bg_noise_strength "${SHARED_BG_NOISE_STRENGTH}"
-    --sequence_shared_noise_refresh "${SEQUENCE_SHARED_NOISE_REFRESH}"
-    --latent_warp_drop_prob "${LATENT_WARP_DROP_PROB}"
-    --latent_warp_x0_clamp "${LATENT_WARP_X0_CLAMP}"
-    --train_batch_size "${CLIPS_PER_DEVICE}"
-    --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}"
-    --max_train_steps "${MAX_TRAIN_STEPS}"
-    --checkpointing_steps "${CHECKPOINTING_STEPS}"
-    --learning_rate "${LEARNING_RATE}"
-    --lr_scheduler "${LR_SCHEDULER}"
-    --lr_warmup_steps "${LR_WARMUP_STEPS}"
-    --gradient_checkpointing
-    --set_grads_to_none
-    --dataloader_num_workers "${DATALOADER_NUM_WORKERS}"
-    --seed "${SEED}"
-    --report_to tensorboard
-    --tracker_project_name latent_warp_v1_run1
     "$@"
+    --config "${CONFIG}"
 )
 
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} (num_processes=${NUM_PROCESSES})"
