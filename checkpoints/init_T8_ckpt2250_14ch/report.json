@@ -1,0 +1,54 @@
+{
+  "created": "2026-11-11T16:38:24",
+  "source_checkpoint": "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/train_sharedNoise_sameBG_0.95_T8/checkpoint-2250",
+  "source_sha256": {
+    "brushnet_weights": "b8e6e82cc2a092c2ae8b66ced6456f4471cace1d95f71e2634543736656cc7bc",
+    "brushnet_config": "622be0ca7dd63cadcce170de337ba0c726e1ad1b1e5046c2369ff2ec3eaa0a82",
+    "ipadapter": "56e065b131735258c1ac46a8db476271b67cec8e2b484d8784c83683f9458a0a",
+    "fusion_module": "ac65998a1a6dd612f32ce270780c4899c62e38fb421e0990730087a7899d890b"
+  },
+  "output_dir": "/user/Cilab/Quan/experiment/latent_warp_run1/init_T8_ckpt2250_14ch",
+  "old_conditioning_channels": 5,
+  "new_conditioning_channels": 10,
+  "conv_in_condition_in_channels": [
+    9,
+    14
+  ],
+  "channel_layout": [
+    "0-3 z_t (sample)",
+    "4-7 decoded-input latent",
+    "8 BG mask (BG=1)",
+    "9-12 warped previous x0 (stable BG only)",
+    "13 validity (stable fraction)"
+  ],
+  "copied_weights_max_abs_diff": 0.0,
+  "new_slices_max_abs": 0.0,
+  "forward_checks": {
+    "999": {
+      "max_abs_residual": 25.125411987304688,
+      "zero_warp_max_abs_diff": 0.0,
+      "random_warp_max_abs_diff": 0.0
+    },
+    "500": {
+      "max_abs_residual": 23.598873138427734,
+      "zero_warp_max_abs_diff": 0.0,
+      "random_warp_max_abs_diff": 0.0
+    },
+    "50": {
+      "max_abs_residual": 19.130430221557617,
+      "zero_warp_max_abs_diff": 0.0,
+      "random_warp_max_abs_diff": 0.0
+    }
+  },
+  "reused": [
+    "brushnet weights",
+    "ipadapter/model.safetensors",
+    "ipadapter/fusion_module.safetensors"
+  ],
+  "not_reused": [
+    "optimizer.bin",
+    "scheduler.bin",
+    "scaler.pt",
+    "random_states_*.pkl"
+  ]
+}

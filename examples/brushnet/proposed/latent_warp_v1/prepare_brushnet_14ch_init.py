@@ -41,11 +41,9 @@ from safetensors.torch import load_file
 from diffusers import BrushNetModel
 from latent_warp_utils import WARP_CONDITIONING_CHANNELS, expand_brushnet_conditioning
 
-DEFAULT_SOURCE = Path(
-    "/home/cilab/ndquan/videoInpainting/code/BrushNet/experiments/"
-    "train_sharedNoise_sameBG_0.95_T8/checkpoint-2250"
-)
-DEFAULT_OUTPUT = Path("/user/Cilab/Quan/experiment/latent_warp_run1/init_T8_ckpt2250_14ch")
+REPO_DIR = HERE.parents[3]
+DEFAULT_SOURCE = REPO_DIR / "experiments" / "train_sharedNoise_sameBG_0.95_T8" / "checkpoint-2250"
+DEFAULT_OUTPUT = REPO_DIR / "checkpoints" / "init_T8_ckpt2250_14ch"
 
 
 def sha256(path: Path) -> str:

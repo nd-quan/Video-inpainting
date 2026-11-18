@@ -41,11 +41,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image
 
-DEFAULT_DATASET_ROOT = Path(
-    "/home/cilab/ndquan/vcm-rs/output/bvi_dvc_part1_qp0_bg_train/bg52"
-)
-DEFAULT_OUTPUT_ROOT = Path("/user/Cilab/Quan/experiment/flows/bvi_dvc_bg52_512")
-DEFAULT_PROPAINTER = Path("/home/cilab/ndquan/videoInpainting/pretrained/ProPainter")
+REPO_DIR = Path(__file__).resolve().parents[4]
+DEFAULT_DATASET_ROOT = REPO_DIR / "examples" / "brushnet" / "dataset" / "bg52"
+DEFAULT_OUTPUT_ROOT = REPO_DIR.parent / "flow-training" / "flows" / "bvi_dvc_bg52_512"
+DEFAULT_PROPAINTER = REPO_DIR.parent / "pretrained" / "ProPainter"
 FB_ALPHA = 0.01
 FB_BETA = 0.5
 

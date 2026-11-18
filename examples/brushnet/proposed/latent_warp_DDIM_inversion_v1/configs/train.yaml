@@ -1,0 +1,11 @@
+extends: ../../latent_warp_v1/configs/run1.yaml
+paths:
+  brushnet_model_name_or_path: /media/ssd1/ndquan/NAS_Quan/experiments/latent-warping/run1/train/checkpoint-6750/brushnet
+  pretrained_ip_adapter_path: /media/ssd1/ndquan/NAS_Quan/experiments/latent-warping/run1/train/checkpoint-6750/ipadapter/model.safetensors
+  fusion_module_path: /media/ssd1/ndquan/NAS_Quan/experiments/latent-warping/run1/train/checkpoint-6750/ipadapter/fusion_module.safetensors
+  output_dir: /media/ssd1/ndquan/video-inpainting/code/experiments/latent_warp_DDIM_inversion_v1/train
+training:
+  max_train_steps: 10000
+logging:
+  checkpointing_steps: 500
+  tracker_project_name: latent_warp_DDIM_inversion_v1
