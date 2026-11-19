@@ -1,7 +1,7 @@
 # Baseline: inherit every run-1 setting except warp dropout and output names.
 extends: run1.yaml
 paths:
-  output_dir: /media/ssd1/ndquan/videoInpainting/code/BrushNet/experiments/latent_warp_run0/train
+  output_dir: /media/ssd1/ndquan/video-inpainting/code/experiments/latent_warp_run0/train
 latent_warp:
   latent_warp_drop_prob: 1.0
 logging:

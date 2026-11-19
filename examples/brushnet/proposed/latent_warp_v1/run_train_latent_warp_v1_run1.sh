@@ -5,9 +5,10 @@
 #   1. Flow cache  : precompute_bg52_teacher_flows_512.py -> ${TEACHER_FLOW_ROOT}
 #   2. 14-ch init  : prepare_brushnet_14ch_init.py        -> ${INITIAL_CHECKPOINT}
 #
-# GPU safety: CUDA_VISIBLE_DEVICES must be given explicitly, and the script
-# refuses to launch if any selected GPU already runs another process
-# (override only with ALLOW_SHARED_GPU=1).  PRINT_ONLY=1 prints the command
+# GPU safety: CUDA_VISIBLE_DEVICES must be set by the scheduler or explicitly.
+# Dashboard jobs use their scheduler allocation and validate CUDA-visible devices.
+# Manual launches refuse busy GPUs (override only with ALLOW_SHARED_GPU=1).
+# PRINT_ONLY=1 prints the command
 # and exits without launching.
 #
 # Example (after checking the GPUs are free):
@@ -18,9 +19,11 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BRUSHNET_DIR="$(cd -- "${HERE}/../.." && pwd)"
 REPO_DIR="$(cd -- "${BRUSHNET_DIR}/../.." && pwd)"
-TRAIN_SCRIPT="${HERE}/train_brushnet_latent_warp_v1.py"
+TRAIN_SCRIPT="${LATENT_WARP_TRAIN_SCRIPT:-${HERE}/train_brushnet_latent_warp_v1.py}"
 # One resolver is shared with the trainer: CLI > environment > YAML > defaults.
-PYTHON_BIN="${PYTHON_BIN:-/media/ssd1/ndquan/envs/guided_diff/bin/python}"
+export HF_HOME="${HF_HOME:-${REPO_DIR}/hf_cache}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
+PYTHON_BIN="${PYTHON_BIN:-/media/ssd1/ndquan/anaconda3/envs/guided_diff/bin/python}"
 SETTINGS="$("${PYTHON_BIN}" "${HERE}/training_config.py" "$@")"
 eval "${SETTINGS}"  # values are shell-quoted by shlex.quote
 export CUDA_VISIBLE_DEVICES
@@ -76,32 +79,42 @@ fi
 
 # ---- GPU guard ----------------------------------------------------------------
 if [[ -z "${CUDA_VISIBLE_DEVICES+x}" ]] || [[ -z "${CUDA_VISIBLE_DEVICES}" ]]; then
-    echo "Set CUDA_VISIBLE_DEVICES explicitly (e.g. CUDA_VISIBLE_DEVICES=0)." >&2
+    echo "Submit with job run -g N, or set CUDA_VISIBLE_DEVICES for a manual launch." >&2
     exit 1
 fi
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 IFS=',' read -r -a GPU_IDS <<< "${CUDA_VISIBLE_DEVICES}"
 NUM_PROCESSES="${#GPU_IDS[@]}"
-BUSY=0
-for gpu in "${GPU_IDS[@]}"; do
-    uuid="$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v g="${gpu}" '$1==g || $2==g {print $2}')"
-    if [[ -z "${uuid}" ]]; then
-        echo "GPU ${gpu} not found by nvidia-smi" >&2
-        exit 1
+if grep -Eq '(^|/)flask-task-[0-9]+\.(scope|service)(/|$)' /proc/self/cgroup; then
+    # Dashboard jobs prohibit nvidia-smi. The scheduler manages allocation;
+    # only validate devices visible through CUDA inside the job's cgroup.
+    GPU_PCI_OUTPUT="$("${PYTHON_BIN}" "${HERE}/visible_gpu_uuids.py" "${NUM_PROCESSES}" --pci-only)"
+    mapfile -t GPU_PCI_IDS <<< "${GPU_PCI_OUTPUT}"
+    echo "Scheduler allocation: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}; PCI devices: ${GPU_PCI_IDS[*]}"
+    echo "GPU occupancy is managed by the scheduler; use the Dashboard or job CLI to inspect it."
+else
+    # Resolve CUDA-visible ordinals before checking physical GPU occupancy.
+    GPU_UUID_OUTPUT="$("${PYTHON_BIN}" "${HERE}/visible_gpu_uuids.py" "${NUM_PROCESSES}")"
+    mapfile -t GPU_UUIDS <<< "${GPU_UUID_OUTPUT}"
+    echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}; physical GPUs: ${GPU_UUIDS[*]}"
+    GPU_PROCESSES="$(nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader)"
+    BUSY=0
+    for gpu in "${!GPU_UUIDS[@]}"; do
+        uuid="${GPU_UUIDS[${gpu}]}"
+        procs="$(awk -F', ' -v u="${uuid}" '$1==u {print "pid " $2 " (" $3 ")"}' <<< "${GPU_PROCESSES}")"
+        if [[ -n "${procs}" ]]; then
+            owners=""
+            for pid in $(echo "${procs}" | awk '{print $2}'); do
+                owners+=" ${pid}:$(ps -o user= -p "${pid}" 2>/dev/null || echo '?')"
+            done
+            echo "CUDA:${gpu} (${uuid}) is in use by:${owners}" >&2
+            BUSY=1
+        fi
+    done
+    if [[ "${BUSY}" == "1" ]] && [[ "${ALLOW_SHARED_GPU}" != "1" ]]; then
+        echo "Refusing to launch: selected GPU(s) are busy. Other users' training must not be disturbed." >&2
+        [[ "${PRINT_ONLY}" == "1" ]] || exit 1
     fi
-    procs="$(nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader | awk -F', ' -v u="${uuid}" '$1==u {print "pid " $2 " (" $3 ")"}')"
-    if [[ -n "${procs}" ]]; then
-        owners=""
-        for pid in $(echo "${procs}" | awk '{print $2}'); do
-            owners+=" ${pid}:$(ps -o user= -p "${pid}" 2>/dev/null || echo '?')"
-        done
-        echo "GPU ${gpu} is in use by:${owners}" >&2
-        BUSY=1
-    fi
-done
-if [[ "${BUSY}" == "1" ]] && [[ "${ALLOW_SHARED_GPU}" != "1" ]]; then
-    echo "Refusing to launch: selected GPU(s) are busy. Other users' training must not be disturbed." >&2
-    [[ "${PRINT_ONLY}" == "1" ]] || exit 1
 fi
 
 # ---- launch -----------------------------------------------------------------------

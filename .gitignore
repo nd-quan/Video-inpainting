@@ -20,7 +20,7 @@ __pycache__/
 
 Quan_test/**/*.pdf
 Quan_test/**/*.pdf
-
+/codec/*
 
 # tests and logs
 tests/fixtures/cached_*_text.txt
@@ -196,3 +196,5 @@ tags
 
 # wandb
 wandb
+
+/hf_cache/

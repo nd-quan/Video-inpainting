@@ -34,7 +34,13 @@ from huggingface_hub import (
     model_info,
     snapshot_download,
 )
-from huggingface_hub.utils import OfflineModeIsEnabled, validate_hf_hub_args
+from huggingface_hub.utils import validate_hf_hub_args
+
+try:
+    from huggingface_hub.utils import OfflineModeIsEnabled
+except ImportError:
+    # huggingface_hub 0.19.x defines this exception in file_download.
+    from huggingface_hub.file_download import OfflineModeIsEnabled
 from packaging import version
 from requests.exceptions import HTTPError
 from tqdm.auto import tqdm

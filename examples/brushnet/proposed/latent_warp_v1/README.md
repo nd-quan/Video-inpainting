@@ -1,58 +1,133 @@
-# latent_warp_v1 — run 1 (stable-BG latent warp, oracle GT flow)
+# Latent warp v1
 
-All files here are new; no existing script was modified. Env: `/home/cilab/ndquan/envs/guided_diff`.
+Training and oracle inference for the 14-input BrushNet checkpoint. Masks use
+BG=1 internally. CGE is disabled until codec integration is available.
 
-| Phase | File | Output |
-|---|---|---|
-| 0 flow cache | `precompute_bg52_teacher_flows_512.py` | `/user/Cilab/Quan/experiment/flows/bvi_dvc_bg52_512/` |
-| 1 14-ch init | `prepare_brushnet_14ch_init.py` | `/user/Cilab/Quan/experiment/latent_warp_run1/init_T8_ckpt2250_14ch/` (**done**, see `report.json`) |
-| 2+3 trainer | `train_brushnet_latent_warp_v1.py` (generated from `training/..._sharedNoise_sameBG_v0_0.py`) | — |
-| shared helpers | `latent_warp_utils.py` | — |
-| launcher | `run_train_latent_warp_v1_run1.sh` | `/user/Cilab/Quan/experiment/latent_warp_run1/train/` |
-| tests | `test_latent_warp_utils.py`, `dryrun_cpu_one_step.sh`, `check_flow_cache_warp.py` | `/user/Cilab/Quan/experiment/latent_warp_run1/_cpu_test/` |
+## Runtime files
 
-## Method (per training step, shared timestep t per clip)
-1. Normal V8 inputs: `z_t`, decoded-input latent, BG mask (BG = 1), shared BG noise.
-2. Extra **no-grad** BrushNet + UNet pass with the 5 warp channels = 0 → `eps_hat` →
-   `x0 = (z_t − sqrt(1−ᾱ_t)·eps_hat) / sqrt(ᾱ_t)` for every frame.
-3. Frame k > 0: `stable_k = BG_k · [warp(BG_{k−1}, teacher_b) > 0.5] · in_bounds · valid_b` (512×512).
-4. `x0_{k−1}` → nearest ×8 → `backward_warp(·, teacher_b)` → `avg_pool8(warped·stable) / avg_pool8(stable)`;
-   validity = `avg_pool8(stable)`. Frame 0 → zeros.
-5. BrushNet input `[z_t 4 | input latent 4 | mask 1 | warped x0 4 | validity 1]` = 14 ch; loss unchanged.
+| File | Purpose |
+|---|---|
+| `train_brushnet_latent_warp_v1.py` | Training |
+| `run_train_latent_warp_v1_run1.sh` | Training launcher |
+| `training_config.py` | YAML/environment/CLI training settings |
+| `precompute_bg52_teacher_flows_512.py` | Create GT teacher flows for training |
+| `prepare_brushnet_14ch_init.py` | Prepare the 14-input initialization checkpoint |
+| `visible_gpu_uuids.py` | Map visible training GPUs |
+| `latent_warp_utils.py` | Shared x0 estimation and stable-BG warp math |
+| `infer_latent_warp_v1.py` | Inference, flow cache, resume and image metrics |
+| `latent_warp_inference.py` | Model loading and two-pass denoising |
+| `original_raft_flow.py` | Load original ProPainter RAFT teacher |
+| `run_independent_inference.py` | Separate one-GPU jobs, merge, videos, optional ablation |
+| `inference_jobs.py` | Shared shard planning, merging and scheduler status |
+| `export_inference_videos.py` | Verified MP4 export; can wait for a running evaluation |
+| `run_full_reference_metrics.py` | Supplied full-reference metric evaluator adapter |
 
-`--latent_warp_drop_prob 1.0` turns the same trainer into the run-0 baseline (same data, steps, noise).
+## Configuration
 
-## Verified (CPU only, 2026-11-11)
-- `test_latent_warp_utils.py`: 8/8 pass (zero flow = identity, 1-latent-px shift, half-block shift is
-  unbiased, ROI/FB-invalid excluded, partial blocks normalised, drop/frame-0 zeros, flow rescale, x0 inversion).
-- Phase 1 `report.json`: copied weights max diff 0.0; new slices 0.0; BrushNet residuals identical
-  (max diff 0.0 at t = 999/500/50) with zero **and** random warp channels.
-- `dryrun_cpu_one_step.sh`: trainer runs end to end; step-0 loss warp ON = warp OFF = 0.05924587324261665
-  (bit-identical); first batch stable_frac_of_bg 0.996, |x0| mean 0.62 / max 3.97.
-- `check_flow_cache_warp.py` (2 test sequences): moving sequence (0.6–0.9 px/frame) pixel PSNR in stable BG
-  +1.0…+4.3 dB after warping → flow direction/units correct. Sub-pixel motion gives no measurable gain at
-  latent scale (±0.8 dB), as expected for motion ≪ 8 px. Re-run on random branches once the full cache exists.
-- Flow speed: CPU 8 threads ≈ 2.4 s/pair (13,104 pairs ≈ 9 h; 2 shards ≈ 4.5 h). Cache ≈ 1.9 MB/pair ≈ 25 GB.
+- `configs/run1.yaml`: training with latent warp.
+- `configs/run0.yaml`: inherited training baseline.
+- `configs/inference_test_oracle.json`: latent warp + latent temporal guidance.
+- `configs/inference_test_oracle_no_temporal.json`: latent warp with temporal guidance off.
+- `configs/inference_test_oracle_no_warp_temporal.json`: shared noise + latent temporal guidance, latent warp off.
 
-## Order of use
-```bash
-cd /home/cilab/ndquan/videoInpainting/code/BrushNet/examples/brushnet/proposed/latent_warp_v1
-PY=/home/cilab/ndquan/envs/guided_diff/bin/python
+Both inference configs use `examples/brushnet/dataset/test`, checkpoint 6750,
+512-square working images, clip length 6, stride 4, seed 1234 and 50 DDIM steps.
+The teacher is original ProPainter RAFT with
+`video-inpainting/flow-training/flows/inference/raft-things.pth`, matching the
+training checkpoint hash. It uses GT RGB, 20 iterations and [-1,1] inputs.
+Cached flow is used for both latent warping and temporal guidance; GT pixels
+are never used as diffusion conditioning. This is oracle evaluation.
 
-# Phase 0 (only on a FREE GPU; refuses to start on a GPU used by anyone else)
-$PY precompute_bg52_teacher_flows_512.py --device auto            # or --device cuda:N
-#   --wait-for-free-gpu 600  : wait until the GPU is free instead of exiting
-#   --resume                 : continue an interrupted run
-#   2 free GPUs: add --num-shards 2 --shard-index {0,1} (one process each)
-# CPU alternative (no GPU at all, lowest priority):
-#   CUDA_VISIBLE_DEVICES= nice -n 19 $PY precompute_bg52_teacher_flows_512.py --device cpu --cpu-threads 8 \
-#       --num-shards 2 --shard-index 0   (and a second process with --shard-index 1)
-# afterwards: $PY check_flow_cache_warp.py --flow-root /user/Cilab/Quan/experiment/flows/bvi_dvc_bg52_512
+Temporal guidance defaults: latent space, inference indices [0,50), every step,
+scale 0.1. Independent switches are `latent_warp_enabled` and
+`temporal_guidance_enabled`. CLI overrides:
 
-# Phase 1 (already done; CPU only)
-$PY prepare_brushnet_14ch_init.py
-
-# Run 1 (only after checking; refuses busy GPUs)
-PRINT_ONLY=1 CUDA_VISIBLE_DEVICES=0 bash run_train_latent_warp_v1_run1.sh   # show command only
-CUDA_VISIBLE_DEVICES=0 bash run_train_latent_warp_v1_run1.sh
+```text
+--latent-warp / --no-latent-warp
+--temporal-guidance / --no-temporal-guidance
 ```
+
+Turning warp off supplies zero warp channels to the same 14-input model.
+Turning temporal guidance off disables its gradient updates. A zero temporal
+scale also disables guidance. Older configs without the enabled flag remain valid.
+
+## Run
+
+From this directory:
+
+```bash
+PY=/media/ssd1/ndquan/anaconda3/envs/guided_diff/bin/python
+
+# Training input-path check, without launching training.
+CHECK_PATHS_ONLY=1 bash run_train_latent_warp_v1_run1.sh --config configs/run1.yaml
+
+# Training under the scheduler; choose the requested GPU count.
+job run -g 3 -e /media/ssd1/ndquan/anaconda3/envs/guided_diff \
+  -n "latent warp training" \
+  "bash $PWD/run_train_latent_warp_v1_run1.sh --config $PWD/configs/run1.yaml"
+
+# CPU-only inference preflight.
+$PY infer_latent_warp_v1.py --config configs/inference_test_oracle.json --preflight
+
+# Submit independent one-GPU inference jobs through a CPU coordinator.
+# The optional second config starts after the first evaluation/videos succeed.
+job run --cpu -e /media/ssd1/ndquan/anaconda3/envs/guided_diff \
+  -n "latent warp inference and temporal ablation" \
+  "$PY $PWD/run_independent_inference.py --config $PWD/configs/inference_test_oracle.json --workers 4 --then-config $PWD/configs/inference_test_oracle_no_temporal.json"
+```
+
+Use a new output directory for a new experiment. For interrupted evaluations,
+use the saved resolved config and add `--resume` to the coordinator. It preserves
+valid PNGs, original clip ownership, context and seeds. Complete shards are
+reused. Saved settings must match. Each scheduler job reserves only one GPU
+and releases it independently; there is no shared four-GPU allocation.
+
+Inference generates/reuses GT flow automatically. `--prepare-flows-only` on
+`infer_latent_warp_v1.py` generates flow without diffusion inference.
+
+## Results and postprocessing
+
+Each evaluation root contains `run_status.json`, `independent_jobs.json`,
+`shard_plan.json`, `summary.json` and `frame_metrics.json`.
+PNG predictions are under `shards/shard-XX/test_1/<sequence>/` or `test_2/`.
+At overlapping windows, the first window owns each output frame. Native-size
+outputs preserve the decoded input's ROI exactly when `preserve_roi` is true.
+
+Video export is automatic after all shards complete. It reuses
+`Quan_test/encode_v8r_original_eval_videos.py`, verifies count/size/FPS and writes
+`videos/test_1/*.mp4`, `videos/test_2/*.mp4` and `videos/video_manifest.json`.
+MP4 is MPEG-4 quality 2, yuv420p. PNGs and image metrics are unchanged.
+For completed or running results, use `export_inference_videos.py --eval-root DIR`
+(add `--wait --task-id ID` to wait for inference).
+
+Full-reference metrics use the supplied script unchanged:
+`Quan_test/metric/full_reference_metrics/evaluate.py`. The adapter creates
+non-destructive links to original PNGs/GT, requires complete sequences and
+matching native dimensions, and reuses cached per-sequence metrics/features.
+
+```bash
+job run --cpu -e /media/ssd1/ndquan/anaconda3/envs/guided_diff \
+  -n "Full-reference metrics after inference" \
+  "$PY $PWD/run_full_reference_metrics.py --after-task CONTROLLER_ID --eval-roots /path/to/eval-on /path/to/eval-off"
+```
+
+It submits independent one-GPU metric jobs after all requested roots complete.
+Results are in `metrics_full_reference/metrics.csv`, `metrics.json`, `source.json`.
+Metrics: PSNR, SSIM, LPIPS, WE, WE_L2, FS, VFID_Clips. ALL uses frame weighting
+for image metrics, pair weighting for temporal metrics and pooled-feature VFID.
+The supplied evaluator's WE uses Farneback on predictions; definitions are in
+its README. Evaluation uses PNGs, not lossy MP4s.
+
+## No-warp ablation
+
+`inference_test_oracle_no_warp_temporal.json` retains checkpoint 6750, shared
+noise .95, seed 1234, GT flow and latent temporal guidance .1 at all 50 steps,
+with CGE off. Only `latent_warp_enabled` and the output directory differ from
+the combined reference run. The same 14-input model receives zero warp/validity
+channels; its zero-warp prepass is skipped.
+
+Controller 736 runs two independent one-GPU jobs (737, 738), then exports videos.
+CPU controller 739 waits to submit the full-reference metric job. Results are
+under `checkpoint-6750_oracle_raft_things_no_warp_shared_noise_latent_tg0p1_2gpu`.
+The previous temporal ON/OFF comparison is saved under
+`experiments/latent_warp_v1_eval/comparison_temporal_on_vs_off/`.

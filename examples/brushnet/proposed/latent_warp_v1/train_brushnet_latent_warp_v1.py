@@ -16,7 +16,7 @@
 #   * loss, IP-Adapter, fusion module, shared BG noise: unchanged.
 #!/usr/bin/env python
 # coding=utf-8
-# env : /media/ssd1/ndquan/envs/guided_diff
+# env : /media/ssd1/ndquan/anaconda3/envs/guided_diff
 import sys
 from pathlib import Path
 
@@ -50,7 +50,7 @@ from torch.utils.data import Dataset
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image, ImageDraw
@@ -115,10 +115,10 @@ DEFAULT_PRETRAINED_MODEL = os.path.join(
     "stable-diffusion-v1-5",
 )
 REPO_DIR = Path(SCRIPT_DIR).parents[1]
-DEFAULT_COCO_TRAIN_ROOT = os.path.join(SCRIPT_DIR, "dataset", "train")
-DEFAULT_TEACHER_FLOW_ROOT = str(REPO_DIR.parent / "flow-training" / "bvi_dvc_bg52_512")
+DEFAULT_COCO_TRAIN_ROOT = os.path.join(SCRIPT_DIR, "dataset", "bg52")
+DEFAULT_TEACHER_FLOW_ROOT = str(REPO_DIR.parent / "flow-training" / "flows" / "bvi_dvc_bg52_512")
 DEFAULT_NULL_CAPTION_FILE = os.path.join(DEFAULT_COCO_TRAIN_ROOT, "caption_empty.txt")
-DEFAULT_INITIAL_CHECKPOINT = str(REPO_DIR / "experiments" / "latent_warp_run1" / "init_T8_ckpt2250_14ch")
+DEFAULT_INITIAL_CHECKPOINT = str(REPO_DIR / "checkpoints" / "init_T8_ckpt2250_14ch")
 DEFAULT_BRUSHNET_CHECKPOINT = os.path.join(DEFAULT_INITIAL_CHECKPOINT, "brushnet")
 DEFAULT_IPADAPTER_CHECKPOINT = os.path.join(
     DEFAULT_INITIAL_CHECKPOINT, "ipadapter", "model.safetensors"
@@ -1105,7 +1105,7 @@ class FGBGFeatureFusion(torch.nn.Module):
         fused = self.out_proj(fused)                # [B, 1, D]
 
         return fused.squeeze(1)                     # [B, D]        
-def main(args):
+def main(args, trajectory_factory=None):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
@@ -1121,7 +1121,14 @@ def main(args):
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        kwargs_handlers=[DistributedDataParallelKwargs(gradient_as_bucket_view=True)],
     )
+
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -1246,6 +1253,11 @@ def main(args):
     text_encoder.requires_grad_(False)
     brushnet.requires_grad_(True)
     image_encoder.requires_grad_(False)
+
+    # Cast the frozen base BEFORE attaching trainable IP-Adapter processors.
+    # Casting the whole adapter later would also turn its gradients into FP16.
+    unet.to(dtype=weight_dtype)
+    logger.info("Frozen UNet dtype=%s; DDP gradient_as_bucket_view=True", weight_dtype)
     
     image_proj_model = ImageProjModel(
         cross_attention_dim=unet.config.cross_attention_dim,
@@ -1388,6 +1400,7 @@ def main(args):
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
+        foreach=False,  # Reduce temporary GPU memory during optimizer.step().
     )
 
     # train_dataset = make_train_dataset(args, tokenizer, accelerator)
@@ -1461,20 +1474,15 @@ def main(args):
     )
     train_dataloader_len = len(train_dataloader)
 
-    # For mixed precision training we cast the text_encoder and vae weights to half-precision
-    # as these models are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
-    # Move vae, unet and text_encoder to device and cast to weight_dtype
+    # Frozen encoders use the same dtype as the frozen UNet base. Trainable
+    # BrushNet, IP-Adapter and fusion parameters remain FP32 for AMP updates.
     vae.to(accelerator.device, dtype=weight_dtype)
-    # unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     image_encoder.to(accelerator.device, dtype=weight_dtype)
-    # brushnet.to(accelerator.device, dtype=weight_dtype)
+    trajectory = (
+        trajectory_factory(args, accelerator.device, noise_scheduler, image_encoder)
+        if trajectory_factory else None
+    )
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(train_dataloader_len / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
@@ -1640,6 +1648,11 @@ def main(args):
     image_logs = None
     
     for epoch in range(first_epoch, args.num_train_epochs):
+        # from_pretrained() leaves UNet/BrushNet in eval mode, but their
+        # gradient-checkpointing paths require training mode.
+        brushnet.train()
+        ip_adapter.train()  # Recursively switches the wrapped UNet to train mode.
+        fusion_module.train()
         for step, batch in enumerate(train_dataloader):
             # The accelerate version in this environment only accepts one model in
             # accumulate(model). Newer versions accept multiple models. Use a
@@ -1676,57 +1689,62 @@ def main(args):
                         f"Flattened latent batch {bsz} does not match "
                         f"B*T={num_clips}*{num_frames}"
                     )
-                latent_clips = latents.reshape(
-                    num_clips, num_frames, *latents.shape[1:]
-                )
-                bg_mask_clips = masks.reshape(
-                    num_clips, num_frames, 1, *masks.shape[-2:]
-                )
-                bg_mask_clips = (
-                    bg_mask_clips >= args.shared_bg_mask_threshold
-                ).to(dtype=latents.dtype)
-                refresh_index = (
-                    epoch if args.sequence_shared_noise_refresh == "epoch" else 0
-                )
-                sequence_shared_bg_noise = make_sequence_shared_background_noise(
-                    latent_template=latent_clips,
-                    sequence_keys=batch["videos"],
-                    base_seed=args.seed if args.seed is not None else 0,
-                    refresh_index=refresh_index,
-                )
-                noise = sample_shared_background_noise(
-                    latent_template=latent_clips,
-                    bg_mask=bg_mask_clips,
-                    strength=args.shared_bg_noise_strength,
-                    variance_preserving=args.variance_preserving_shared_noise,
-                    shared_bg_noise=sequence_shared_bg_noise,
-                ).reshape_as(latents)
-
-                timesteps = sample_clip_timesteps(
-                    num_clips=num_clips,
-                    clip_length=num_frames,
-                    num_train_timesteps=noise_scheduler.config.num_train_timesteps,
-                    device=latents.device,
-                    share_across_clip=not args.independent_frame_timesteps,
-                )
-                if accelerator.is_main_process and global_step == 0 and step == 0:
-                    logger.info(
-                        "Sequence-shared first batch: sequences=%s, latent=%s, "
-                        "clip_layout=(%d,%d), noise_mean=%.4f, noise_std=%.4f, "
-                        "bg_ratio=%.4f, first_t=%s",
-                        batch["videos"],
-                        tuple(latents.shape),
-                        num_clips,
-                        num_frames,
-                        float(noise.float().mean()),
-                        float(noise.float().std(unbiased=False)),
-                        float(bg_mask_clips.float().mean()),
-                        timesteps[:num_frames].detach().cpu().tolist(),
+                if trajectory is not None:
+                    noisy_latents, timesteps, inversion_target = trajectory(
+                        batch, conditioning_latents, latents, num_clips, num_frames
                     )
+                else:
+                    latent_clips = latents.reshape(
+                        num_clips, num_frames, *latents.shape[1:]
+                    )
+                    bg_mask_clips = masks.reshape(
+                        num_clips, num_frames, 1, *masks.shape[-2:]
+                    )
+                    bg_mask_clips = (
+                        bg_mask_clips >= args.shared_bg_mask_threshold
+                    ).to(dtype=latents.dtype)
+                    refresh_index = (
+                        epoch if args.sequence_shared_noise_refresh == "epoch" else 0
+                    )
+                    sequence_shared_bg_noise = make_sequence_shared_background_noise(
+                        latent_template=latent_clips,
+                        sequence_keys=batch["videos"],
+                        base_seed=args.seed if args.seed is not None else 0,
+                        refresh_index=refresh_index,
+                    )
+                    noise = sample_shared_background_noise(
+                        latent_template=latent_clips,
+                        bg_mask=bg_mask_clips,
+                        strength=args.shared_bg_noise_strength,
+                        variance_preserving=args.variance_preserving_shared_noise,
+                        shared_bg_noise=sequence_shared_bg_noise,
+                    ).reshape_as(latents)
 
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                    timesteps = sample_clip_timesteps(
+                        num_clips=num_clips,
+                        clip_length=num_frames,
+                        num_train_timesteps=noise_scheduler.config.num_train_timesteps,
+                        device=latents.device,
+                        share_across_clip=not args.independent_frame_timesteps,
+                    )
+                    if accelerator.is_main_process and global_step == 0 and step == 0:
+                        logger.info(
+                            "Sequence-shared first batch: sequences=%s, latent=%s, "
+                            "clip_layout=(%d,%d), noise_mean=%.4f, noise_std=%.4f, "
+                            "bg_ratio=%.4f, first_t=%s",
+                            batch["videos"],
+                            tuple(latents.shape),
+                            num_clips,
+                            num_frames,
+                            float(noise.float().mean()),
+                            float(noise.float().std(unbiased=False)),
+                            float(bg_mask_clips.float().mean()),
+                            timesteps[:num_frames].detach().cpu().tolist(),
+                        )
+
+                    # Add noise to the latents according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
                 with torch.no_grad():
                     base_image_embeds = image_encoder(batch["clip_images"].to(accelerator.device, dtype=weight_dtype)).image_embeds # [6.1024]
                     fg_image_embeds = image_encoder(batch["fg_clip_images"].to(accelerator.device, dtype=weight_dtype)).image_embeds
@@ -1895,7 +1913,9 @@ def main(args):
                 )
                 
                 # Get the target for loss depending on the prediction type
-                if noise_scheduler.config.prediction_type == "epsilon":
+                if trajectory is not None:
+                    target = inversion_target
+                elif noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
                 elif noise_scheduler.config.prediction_type == "v_prediction":
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
